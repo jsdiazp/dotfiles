@@ -255,6 +255,9 @@ configure_dotfiles() {
   curl -LO --output-dir ~/.config/alacritty https://github.com/catppuccin/alacritty/raw/main/catppuccin-mocha.toml
   [[ "$OS" != Darwin* ]] && sed -i 's/decorations = "Transparent"/decorations = "None"/' ~/.config/alacritty/alacritty.toml
 
+  ## Configure btop++
+  ln -sf btop ~/.config/btop
+
   ## Configure Starship
   eval "$(starship init zsh)"
   starship preset gruvbox-rainbow -o ~/.config/starship.toml
