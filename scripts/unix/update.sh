@@ -1,12 +1,13 @@
 #!/bin/zsh
+
+# Source .zshrc if it exists
 [[ -e ~/.zshrc ]] && source ~/.zshrc
 
-# Functions
-
-title() {
-  value=""
+# Function to log messages with timestamps
+log() {
+  local value=""
   if [[ -n $1 ]]; then
-    value="\033[0;35m⚡️$1\033[0m"
+    value="\033[0;35m$(date +"%Y-%m-%d %H:%M:%S")] ⚡️$1\033[0m"
   fi
   if [[ -n $1 && ${2:-true} == true ]]; then
     value="\n$value"
@@ -17,112 +18,155 @@ title() {
   [[ -n $value ]] && echo $value
 }
 
-# System
-
-case "$(uname -s)" in
-Darwin*)
-  ## softwareupdate
+# Function to update macOS software
+update_macos() {
   if command -v softwareupdate >/dev/null; then
-    title "macOS" false
     softwareupdate -i -a
   fi
-  ;;
+}
 
-Linux*)
-  ## apt
+# Function to update Linux packages
+update_linux() {
   if command -v apt >/dev/null; then
-    title "apt" false
     sudo apt update -y
     sudo apt full-upgrade -y
     sudo apt dist-upgrade -y
     sudo apt autoremove -y
     sudo apt autoclean -y
   fi
+}
 
-  ## WinGet (WSL)
+# Function to update WinGet packages (for WSL)
+update_winget() {
   if command -v Winget.exe >/dev/null; then
-    title "WinGet" false
     Winget.exe upgrade --all
   fi
+}
 
-  ## Snapcraft
+# Function to refresh Snap packages
+update_snap() {
   if command -v snap >/dev/null; then
-    title "Snapcraft"
     sudo snap refresh
   fi
+}
 
-  ## Flatpak
+# Function to update Flatpak packages
+update_flatpak() {
   if command -v flatpak >/dev/null; then
-    title "Flatpak"
     flatpak update
   fi
-  ;;
-esac
+}
 
-# Version managers
+# Function to update NVM and install latest Node.js LTS version
+update_nvm() {
+  if command -v nvm >/dev/null; then
+    nvm upgrade
+    nvm install --lts --latest-npm
+    nvm use --lts
+  fi
+}
 
-## NVM
-if command -v nvm >/dev/null; then
-  title "NVM"
-  nvm upgrade
-  nvm install --lts --latest-npm
-  nvm use --lts
-fi
+# Function to update RubyGem packages
+update_rubygem() {
+  if command -v gem >/dev/null; then
+    gem cleanup
+    gem update
+    gem cleanup
+  fi
+}
 
-# Package managers
+# Function to clean CocoPods cache
+clean_cocopods_cache() {
+  if command -v pod >/dev/null; then
+    pod cache clean --all
+  fi
+}
 
-## RubyGem
-if command -v gem >/dev/null; then
-  title "RubyGem"
-  gem cleanup
-  gem update
-  gem cleanup
-fi
+# Function to update and clean Homebrew packages
+update_homebrew() {
+  if command -v brew >/dev/null; then
+    brew cleanup
+    brew update --auto-update
+    brew update
+    brew upgrade
+    brew autoremove
+    brew cleanup
+    brew doctor
+  fi
+}
 
-## CocoPods
-if command -v pod >/dev/null; then
-  title "CocoPods" true false
-  pod cache clean --all
-fi
+# Function to update npm packages globally
+update_npm() {
+  if command -v npm >/dev/null; then
+    npm cache clean --force
+    npm upgrade -g
+    npm cache clean --force
+  fi
+}
 
-## Homebrew
-if command -v brew >/dev/null; then
-  title "Homebrew"
-  brew cleanup
-  brew update --auto-update
-  brew update
-  brew upgrade
-  brew autoremove
-  brew cleanup
-  brew doctor
-fi
+# Function to clean Yarn cache
+clean_yarn_cache() {
+  if command -v yarn >/dev/null; then
+    yarn cache clean
+  fi
+}
 
-## npm
-if command -v npm >/dev/null; then
-  title "npm"
-  npm cache clean --force
-  npm upgrade -g
-  npm cache clean --force
-fi
+# Function to update Composer packages globally
+update_composer() {
+  if command -v composer >/dev/null; then
+    composer self-update
+    composer global update
+    composer global dump-autoload
+  fi
+}
 
-## Yarn
-if command -v yarn >/dev/null; then
-  title "Yarn"
-  yarn cache clean
-fi
+# Function to update Oh My Zsh
+update_ohmyzsh() {
+  if command -v omz >/dev/null; then
+    omz update --unattendand
+  fi
+}
 
-## Composer
-if command -v composer >/dev/null; then
-  title "Composer"
-  composer self-update
-  composer global update
-  composer global dump-autoload
-fi
+# Main function to execute all updates
+main() {
+  log "Starting System Updates" false
 
-# Shell
+  case "$(uname -s)" in
+  Darwin*)
+    log "Updating macOS"
+    update_macos
+    ;;
+  Linux*)
+    log "Updating Linux Packages"
+    update_linux
+    log "Updating WinGet Packages (WSL)"
+    update_winget
+    log "Refreshing Snap Packages"
+    update_snap
+    log "Updating Flatpak Packages"
+    update_flatpak
+    ;;
+  esac
 
-## Oh My Zsh
-if command -v omz >/dev/null; then
-  title "Oh My Zsh"
-  omz update --unattendand
-fi
+  log "Updating NVM and Installing Latest Node.js LTS"
+  update_nvm
+  log "Updating RubyGem Packages"
+  update_rubygem
+  log "Cleaning CocoPods Cache"
+  clean_cocopods_cache
+  log "Updating Homebrew Packages"
+  update_homebrew
+  log "Updating npm Packages Globally"
+  update_npm
+  log "Cleaning Yarn Cache"
+  clean_yarn_cache
+  log "Updating Composer Packages"
+  update_composer
+  log "Updating Oh My Zsh"
+  update_ohmyzsh
+
+  log "System Updates Completed"
+}
+
+# Execute the main function
+main

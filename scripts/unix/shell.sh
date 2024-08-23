@@ -2,9 +2,19 @@
 # Shell
 # Interface to interact with the operating system
 
-# Logging function for consistent output
+# Log messages with timestamps
 log() {
-  echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1"
+  local value=""
+  if [[ -n $1 ]]; then
+    value="\033[0;35m$(date +"%Y-%m-%d %H:%M:%S")] ⚡️$1\033[0m"
+  fi
+  if [[ -n $1 && ${2:-true} == true ]]; then
+    value="\n$value"
+  fi
+  if [[ -n $1 && ${3:-true} == true ]]; then
+    value="$value\n"
+  fi
+  [[ -n $value ]] && echo $value
 }
 
 # Detect the operating system and architecture
@@ -264,7 +274,7 @@ configure_dotfiles() {
 # Main script execution
 main() {
   detect_os
-  log "️Setting up ZSH"
+  log "️Setting up ZSH" false
   setup_zsh
   log "️Installing node.js"
   install_node
