@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/zsh
 # Shell
 # Interface to interact with the operating system
 
