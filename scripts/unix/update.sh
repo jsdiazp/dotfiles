@@ -5,17 +5,17 @@
 
 # Function to log messages with timestamps
 log() {
-  local value=""
-  if [[ -n $1 ]]; then
-    value="\033[0;35m$(date +"%Y-%m-%d %H:%M:%S")] ⚡️$1\033[0m"
+  local message=$1
+  local add_newline_before=${2:-true}
+  local add_newline_after=${3:-true}
+  local formatted_message=""
+
+  if [[ -n $message ]]; then
+    formatted_message="\033[0;35m[$(date +"%Y-%m-%d %H:%M:%S")] ⚡️ $message\033[0m"
+    [[ $add_newline_before == true ]] && formatted_message="\n$formatted_message"
+    [[ $add_newline_after == true ]] && formatted_message="$formatted_message\n"
+    echo -e "$formatted_message"
   fi
-  if [[ -n $1 && ${2:-true} == true ]]; then
-    value="\n$value"
-  fi
-  if [[ -n $1 && ${3:-true} == true ]]; then
-    value="$value\n"
-  fi
-  [[ -n $value ]] && echo $value
 }
 
 # Function to update macOS software
