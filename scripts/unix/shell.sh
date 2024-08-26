@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env zsh
 # Shell
 # Interface to interact with the operating system
 
@@ -32,7 +32,7 @@ install_zsh() {
     sudo yum update
     sudo yum install -y zsh
   else
-    echo "Unsupported package manager. Please install ZSH manually."
+    log "Unsupported package manager. Please install ZSH manually." false
     exit 1
   fi
 }
@@ -48,57 +48,70 @@ install_oh_my_zsh() {
 # Install ZSH Plugin
 install_zsh_plugin() {
   local repo="$1"
-  local dir="${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/$(basename "$repo")"
-  if [[ ! -d "$dir" ]]; then
-    git clone "https://github.com/$repo" "$dir"
-  fi
-}
+  local dir="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/$(basename "$repo")"
 
-# Configure a ZSH plugin by appending settings to .zshrc
-configure_zsh_plugin() {
-  echo -e "\n# $1\n$2\n" >>~/.zshrc
+  if [[ -d "$dir" ]]; then
+    log "Plugin directory $dir already exists. Removing and reinstalling $repo." false
+    rm -rf "$dir"
+  fi
+
+  git clone "https://github.com/$repo" "$dir"
 }
 
 # Activate the specified ZSH plugins in .zshrc
 activate_zsh_plugins() {
-  local plugins=("$@")
+  local zsh_plugins=("$@")
   case "$OS" in
-  macOS) sed -i '' -e "s/plugins=(git)/plugins=(${plugins[*]})/" ~/.zshrc ;;
-  Linux) sed -i "s/plugins=(git)/plugins=(${plugins[*]})/" ~/.zshrc ;;
+  Darwin*) sed -i '' -e "s/plugins=(git)/plugins=(${zsh_plugins[*]})/" ~/.zshrc ;;
+  Linux*) sed -i "s/plugins=(git)/plugins=(${zsh_plugins[*]})/" ~/.zshrc ;;
   esac
 }
 
 # Set up ZSH and install plugins
 setup_zsh() {
-  local plugins=()
+  local zsh_plugins=()
 
-  install_zsh
+  if [[ "$OS" == Linux* ]]; then
+    install_zsh
+  fi
 
   ## Oh My Zsh (https://ohmyz.sh/)
   ## Enhances the functionality of zsh
-  install_oh_my_zsh
+  install_oh_my_zsh || {
+    log "Failed to install Oh My Zsh." false
+    exit 1
+  }
 
   ## ZSH Autosuggestions (https://github.com/zsh-users/zsh-autosuggestion)
   ## Suggests commands as you type based on history and completions
-  install_zsh_plugin zsh-users/zsh-autosuggestions
-  configure_zsh_plugin "ZSH Autosuggestions" "ZSH_AUTOSUGGEST_STRATEGY=(history completion)"
+  install_zsh_plugin zsh-users/zsh-autosuggestions || {
+    log "Failed to install zsh-autosuggestions." false
+    exit 1
+  }
+  configure_tool "ZSH Autosuggestions" "ZSH_AUTOSUGGEST_STRATEGY=(history completion)"
 
   ## ZSH Syntax Highlighting (https://github.com/zsh-users/zsh-syntax-highlighting)
   ## Highlights commands as you type for better readabilit
-  install_zsh_plugin zsh-users/zsh-syntax-highlighting
-  configure_zsh_plugin "ZSH Syntax Highlighting" "ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)"
+  install_zsh_plugin zsh-users/zsh-syntax-highlighting || {
+    log "Failed to install zsh-syntax-highlighting." false
+    exit 1
+  }
+  configure_tool "ZSH Syntax Highlighting" "ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)"
 
   ## zsh-nvm (https://github.com/lukechilds/zsh-nvm)
   ## Node.js version manager
-  install_zsh_plugin lukechilds/zsh-nvm
+  install_zsh_plugin lukechilds/zsh-nvm || {
+    log "Failed to install zsh-nvm." false
+    exit 1
+  }
 
-  plugins=(
+  zsh_plugins=(
     git
     zsh-autosuggestions
     zsh-syntax-highlighting
     zsh-nvm
   )
-  activate_zsh_plugins "${plugins[@]}"
+  activate_zsh_plugins "${zsh_plugins[@]}"
 
   source ~/.zshrc
 }
@@ -123,39 +136,40 @@ install_homebrew() {
   local packages=()
 
   ## Uninstall any existing Homebrew
-  [[ -e $HOMEBREW_PREFIX ]] && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)" -y
+  [[ -e $HOMEBREW_PREFIX ]] && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"
 
   ## Requirements (https://docs.brew.sh/Homebrew-on-Linux#requirements)
 
-  ### Debian or Ubuntu
-  if command -v apt >/dev/null; then
-    packages=(
-      build-essential
-      curl
-      file
-      git
-      procps
-    )
-    sudo apt install -y "${packages[@]}"
-  fi
+  if [[ $OS == Linux* ]]; then
+    ### Debian or Ubuntu
+    if command -v apt >/dev/null; then
+      packages=(
+        build-essential
+        curl
+        file
+        git
+        procps
+      )
+      sudo apt install -y "${packages[@]}"
+    fi
 
-  ### Fedora, CentOS, or Red Hat
-  if command -v yum >/dev/null; then
-    packages=(
-      curl
-      file
-      git
-      procps-ng
-    )
-    sudo yum groupinstall -y 'Development Tools'
-    sudo yum install -y "${packages[@]}"
+    ### Fedora, CentOS, or Red Hat
+    if command -v yum >/dev/null; then
+      packages=(
+        curl
+        file
+        git
+        procps-ng
+      )
+      sudo yum groupinstall -y 'Development Tools'
+      sudo yum install -y "${packages[@]}"
+    fi
   fi
 
   ## Installation
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" -y
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
   ## Configuration
-  echo '# Hombebrew' >>~/.zshrc
   case "$OS" in
   Darwin*)
     case "$ARCH" in
@@ -165,7 +179,7 @@ install_homebrew() {
     ;;
   Linux*) breweval="\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" ;;
   esac
-  echo "eval \"$breweval\"\n" >>~/.zshrc
+  configure_tool "Homebrew" "eval \"$breweval\""
 
   ## Post-configuration
   source ~/.zshrc
@@ -173,7 +187,7 @@ install_homebrew() {
 
 # Configure additional tools
 configure_tool() {
-  echo -e "\n# $1\n$2\n" >>~/.zshrc
+  echo -e "\n# $1\n$2" >>~/.zshrc
 }
 
 # Install additional tools
@@ -206,6 +220,14 @@ install_tools() {
   tools+=(fzf)
   configure_tool "fzf" "source <(fzf --zsh)"
 
+  ## lazydocker (https://github.com/jesseduffield/lazydocker)
+  # A lazier way to manage everything docker
+  tools+=(lazydocker)
+
+  ## lazygit (https://github.com/jesseduffield/lazygit)
+  ## Simple terminal UI for git commands
+  tools+=(lazygit)
+
   ## lsd (https://github.com/lsd-rs/lsd)
   ## Next-generation 'ls' command
   tools+=(lsd)
@@ -222,7 +244,7 @@ install_tools() {
   ## The Fuck (https://github.com/nvbn/thefuck)
   ## Suggests corrections for the previous command
   tools+=(thefuck)
-  configure_tool "The Fuck" 'eval $(thefuck --alias)'
+  configure_tool "The Fuck" 'eval "$(thefuck --alias)"'
 
   ## tmux (https://github.com/tmux/tmux)
   ## Terminal multiplexer
@@ -251,12 +273,13 @@ configure_dotfiles() {
 
   ## Configure Alacritty
   [[ -d ~/.config/alacritty ]] && rm -rf ~/.config/alacritty
-  ln -sf alacritty ~/.config/alacritty
+  ln -sf "$PWD/alacritty" ~/.config/alacritty
   curl -LO --output-dir ~/.config/alacritty https://github.com/catppuccin/alacritty/raw/main/catppuccin-mocha.toml
   [[ "$OS" != Darwin* ]] && sed -i 's/decorations = "Transparent"/decorations = "None"/' ~/.config/alacritty/alacritty.toml
 
   ## Configure btop++
-  ln -sf btop ~/.config/btop
+  [[ -d ~/.config/btop ]] && rm -rf ~/.config/btop
+  ln -sf "$PWD/btop" ~/.config/btop
 
   ## Configure Starship
   eval "$(starship init zsh)"
@@ -264,31 +287,49 @@ configure_dotfiles() {
 
   ## Configure tmux
   [[ -d ~/.config/tmux ]] && rm -rf ~/.config/tmux
-  ln -sf tmux ~/.config/tmux
+  ln -sf "$PWD/tmux" ~/.config/tmux
 
   ## Configure Vim
   [[ -d ~/.config/vim ]] && rm -rf ~/.config/vim
   [[ -f ~/.vimrc ]] && rm -rf ~/.vimrc
   mkdir -p ~/.config/vim
-  ln -sf vim/.vimrc ~/.vimrc
-  ln -sf vim/plugins ~/.config/vim/plugins
+  ln -sf "$PWD/vim/.vimrc" ~/.vimrc
+  ln -sf "$PWD/vim/plugins" ~/.config/vim/plugins
 }
 
 # Main script execution
 main() {
   detect_os
   log "️Setting up ZSH" false
-  setup_zsh
+  setup_zsh || {
+    log "Failed to set up ZSH." false
+    exit 1
+  }
   log "️Installing node.js"
-  install_node
+  install_node || {
+    log "Failed to install Node.js." false
+    exit 1
+  }
   log "️Installing Homebrew"
-  install_homebrew
+  install_homebrew || {
+    log "Failed to install Homebrew." false
+    exit 1
+  }
   log "️Installing tools"
-  install_tools
+  install_tools || {
+    log "Failed to install tools." false
+    exit 1
+  }
   log "️Configuring dotfiles"
-  configure_dotfiles
+  configure_dotfiles || {
+    log "Failed to configure dotfiles." false
+    exit 1
+  }
   log "️Activating ZSH Shell"
-  activate_zsh
+  activate_zsh || {
+    log "Failed to activate ZSH as the default shell." false
+    exit 1
+  }
   log "️System setup completed!"
 }
 

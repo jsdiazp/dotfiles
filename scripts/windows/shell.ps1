@@ -55,7 +55,7 @@ Set-PSReadlineKeyHandler -Key Tab -Function MenuComplete`n" >>$PROFILE
   # JavaScript runtime
 
   ## Installation
-  powershell -c "irm bun.sh/install.ps1|iex"
+  scoop install bun
 
   # fd (https://github.com/sharkdp/fd)
   # Simple, fast, and user-friendly alternative to "find"

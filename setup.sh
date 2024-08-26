@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# Define colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+# CYAN='\033[0;36m'
+# WHITE='\033[0;37m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
 unix_scripts=(
   "scripts/unix/shell.sh"
   "scripts/unix/swap.sh"
@@ -12,7 +22,7 @@ server_scripts=(
 # Quit the script if the user chooses to exit
 quit() {
   if [[ "$choice" == "q" ]]; then
-    echo "Happy coding!"
+    echo -e "${BLUE}Happy coding!${RESET}"
     exit 0
   fi
 }
@@ -20,13 +30,16 @@ quit() {
 # Handle other non-menu actions like quitting
 other_options_actions() {
   quit
+  if [[ "$choice" == "b" ]]; then
+    return 1
+  fi
 }
 
 # Validate the user's menu selection
 wrong_option_validation() {
   local alternatives=("$@")
-  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -ge "${#alternatives[@]}" ]]; then
-    echo -e "Wrong option. Please try again.\n"
+  if ! [[ "$choice" =~ ^([0-9]|b)+$ ]] || [[ "$choice" -ge "${#alternatives[@]}" ]]; then
+    echo -e "${RED}Wrong option. Please try again.${RESET}\n"
     return 1
   fi
   return 0
@@ -36,15 +49,15 @@ wrong_option_validation() {
 display_options() {
   local opts=("$@")
   for i in "${!opts[@]}"; do
-    echo -e "$i) ${opts[$i]}"
+    echo -e "${YELLOW}$i) ${opts[$i]}${RESET}"
   done
 }
 
 # Display additional options like quitting
 display_other_options() {
-  echo -e "\nOther options:\n"
-  echo -e "b) Back to main menu"
-  echo -e "q) Quit\n"
+  echo -e "\n${GREEN}Other options:\n${RESET}"
+  echo -e "${YELLOW}b) Back to main menu${RESET}"
+  echo -e "${YELLOW}q) Quit${RESET}\n"
 }
 
 # Execute the chosen script if it exists
@@ -53,7 +66,7 @@ execute_script() {
   local interpreter=$2
   if [[ -f "$script" ]]; then
     "$interpreter" "$script"
-    echo -e "\nScript executed successfully."
+    echo -e "\n${BLUE}Script executed successfully.${RESET}\n"
   else
     echo "Script not found: $script"
   fi
@@ -61,7 +74,7 @@ execute_script() {
 
 # Display the main menu for a given set of alternatives
 display_menu() {
-  echo -e "\n$1\n"
+  echo -e "${BOLD}${GREEN}$1${RESET}\n"
 
   shift
   local alternatives=("$@")
@@ -75,9 +88,9 @@ display_menu() {
 
   unset IFS
 
-  echo -e "\n"
+  echo -e ""
 
-  other_options_actions
+  other_options_actions || return 1
   wrong_option_validation "${alternatives[@]}" || return 1
 
   return 0
@@ -104,7 +117,7 @@ server_menu() {
 
   display_menu "What server OS do you want to set up?" "${alternatives[@]}" || return
 
-  execute_script "${server_scripts[$choice]}" bash
+  execute_script "${server_scripts[$choice]}" zsh
 }
 
 # Main menu to select the general task

@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env zsh
 
 # Source .zshrc if it exists
 [[ -e ~/.zshrc ]] && source ~/.zshrc

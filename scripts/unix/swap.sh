@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env zsh
 
 # Function to log messages with timestamps
 log() {
