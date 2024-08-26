@@ -61,10 +61,10 @@ configure_zsh_plugin() {
 
 # Activate the specified ZSH plugins in .zshrc
 activate_zsh_plugins() {
-  local plugins="$1"
+  local plugins=("$@")
   case "$OS" in
-  macOS) sed -i '' -e "s/plugins=(git)/plugins=($plugins)/" ~/.zshrc ;;
-  Linux) sed -i "s/plugins=(git)/plugins=($plugins)/" ~/.zshrc ;;
+  macOS) sed -i '' -e "s/plugins=(git)/plugins=(${plugins[*]})/" ~/.zshrc ;;
+  Linux) sed -i "s/plugins=(git)/plugins=(${plugins[*]})/" ~/.zshrc ;;
   esac
 }
 
