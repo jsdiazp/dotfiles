@@ -208,15 +208,15 @@ if (
   $removeSystemIcon = Read-Host "> Do you want to disable the system icon? y/n"
 
   if ($removeSystemIcon -eq "y") {
-    sd '\[os\].*\ndisabled\ = false' '[os]\ndisabled = true' .\.config\starship.toml
+    sd '\[os\].*\ndisabled\ = false' '[os]\ndisabled = true' $HOME\.config\starship.toml
   }
   else {
-    sd 'Windows = "󰍲"' 'Windows = ""' .\.config\starship.toml
+    sd 'Windows = "󰍲"' 'Windows = ""' $HOME\.config\starship.toml
   }
 
-  sd '"Documents" = "󰈙 "' '# "Documents" = "󰈙 "' .\.config\starship.toml
-  sd '"Music" = "󰝚 "' '"Music" = " "' .\.config\starship.toml
-  sd '"Developer" = "󰲋 "' '# "Developer" = "󰲋 "' .\.config\starship.toml
+  sd '"Documents" = "󰈙 "' '# "Documents" = "󰈙 "' $HOME\.config\starship.toml
+  sd '"Music" = "󰝚 "' '"Music" = " "' $HOME\.config\starship.toml
+  sd '"Developer" = "󰲋 "' '# "Developer" = "󰲋 "' $HOME\.config\starship.toml
 }
 
 $setupVimrc = Read-Host "3. Do you want to activate a basic configuration for Vim? y/n"
