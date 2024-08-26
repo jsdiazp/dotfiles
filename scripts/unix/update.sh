@@ -20,6 +20,7 @@ log() {
 
 # Function to update macOS software
 update_macos() {
+  log "Updating macOS"
   if command -v softwareupdate >/dev/null; then
     softwareupdate -i -a
   fi
@@ -27,6 +28,7 @@ update_macos() {
 
 # Function to update Linux packages
 update_linux() {
+  log "Updating Linux Packages"
   if command -v apt >/dev/null; then
     sudo apt update -y
     sudo apt full-upgrade -y
@@ -38,6 +40,7 @@ update_linux() {
 
 # Function to update WinGet packages (for WSL)
 update_winget() {
+  log "Updating WinGet Packages (WSL)"
   if command -v Winget.exe >/dev/null; then
     Winget.exe upgrade --all
   fi
@@ -45,6 +48,7 @@ update_winget() {
 
 # Function to refresh Snap packages
 update_snap() {
+  log "Refreshing Snap Packages"
   if command -v snap >/dev/null; then
     sudo snap refresh
   fi
@@ -52,6 +56,7 @@ update_snap() {
 
 # Function to update Flatpak packages
 update_flatpak() {
+  log "Updating Flatpak Packages"
   if command -v flatpak >/dev/null; then
     flatpak update
   fi
@@ -59,6 +64,7 @@ update_flatpak() {
 
 # Function to update NVM and install latest Node.js LTS version
 update_nvm() {
+  log "Updating NVM and Installing Latest Node.js LTS"
   if command -v nvm >/dev/null; then
     nvm upgrade
     nvm install --lts --latest-npm
@@ -68,6 +74,7 @@ update_nvm() {
 
 # Function to update RubyGem packages
 update_rubygem() {
+  log "Updating RubyGem Packages"
   if command -v gem >/dev/null; then
     gem cleanup
     gem update
@@ -77,6 +84,7 @@ update_rubygem() {
 
 # Function to clean CocoPods cache
 clean_cocopods_cache() {
+  log "Cleaning CocoPods Cache"
   if command -v pod >/dev/null; then
     pod cache clean --all
   fi
@@ -84,6 +92,7 @@ clean_cocopods_cache() {
 
 # Function to update and clean Homebrew packages
 update_homebrew() {
+  log "Updating Homebrew Packages"
   if command -v brew >/dev/null; then
     brew cleanup
     brew update --auto-update
@@ -97,6 +106,7 @@ update_homebrew() {
 
 # Function to update npm packages globally
 update_npm() {
+  log "Updating npm Packages Globally"
   if command -v npm >/dev/null; then
     npm cache clean --force
     npm upgrade -g
@@ -106,6 +116,7 @@ update_npm() {
 
 # Function to clean Yarn cache
 clean_yarn_cache() {
+  log "Cleaning Yarn Cache"
   if command -v yarn >/dev/null; then
     yarn cache clean
   fi
@@ -113,6 +124,7 @@ clean_yarn_cache() {
 
 # Function to update Composer packages globally
 update_composer() {
+  log "Updating Composer Packages"
   if command -v composer >/dev/null; then
     composer self-update
     composer global update
@@ -122,6 +134,7 @@ update_composer() {
 
 # Function to update Oh My Zsh
 update_ohmyzsh() {
+  log "Updating Oh My Zsh"
   if command -v omz >/dev/null; then
     omz update --unattendand
   fi
@@ -133,36 +146,23 @@ main() {
 
   case "$(uname -s)" in
   Darwin*)
-    log "Updating macOS"
     update_macos
     ;;
   Linux*)
-    log "Updating Linux Packages"
     update_linux
-    log "Updating WinGet Packages (WSL)"
     update_winget
-    log "Refreshing Snap Packages"
     update_snap
-    log "Updating Flatpak Packages"
     update_flatpak
     ;;
   esac
 
-  log "Updating NVM and Installing Latest Node.js LTS"
   update_nvm
-  log "Updating RubyGem Packages"
   update_rubygem
-  log "Cleaning CocoPods Cache"
   clean_cocopods_cache
-  log "Updating Homebrew Packages"
   update_homebrew
-  log "Updating npm Packages Globally"
   update_npm
-  log "Cleaning Yarn Cache"
   clean_yarn_cache
-  log "Updating Composer Packages"
   update_composer
-  log "Updating Oh My Zsh"
   update_ohmyzsh
 
   log "System Updates Completed"
