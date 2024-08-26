@@ -15,6 +15,14 @@ log() {
   fi
 }
 
+# Function to validate operating system compatibility
+validate_compatibility() {
+  if ! command -v swapon >/dev/null; then
+    echo "Unsupported operating system"
+    exit 1
+  fi
+}
+
 # Function to check the system for swap information
 check_swap_info() {
   sudo swapon --show
@@ -50,7 +58,9 @@ make_swap_permanent() {
 
 # Main function to execute all steps
 main() {
-  log "Checking the System for Swap Information" false
+  log "Validating system compatibility" false
+  validate_compatibility
+  log "Checking the System for Swap Information"
   check_swap_info
   log "Checking Available Space on the Hard Drive Partition"
   check_disk_space
