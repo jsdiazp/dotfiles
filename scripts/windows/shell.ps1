@@ -234,9 +234,7 @@ if ($setupVimrc -eq "y") {
   Invoke-WebRequest -useb https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim |`
     New-Item $HOME/vimfiles/autoload/plug.vim -Force
 
-  git clone https://github.com/jsdiazp/dotfiles
-
-  Copy-Item dotfiles/vim/.vimrc ~/_vimrc
+  Copy-Item vim/.vimrc ~/_vimrc
 
   Write-Output (Get-Content ~/_vimrc | Where-Object {
     -not ($_.ReadCount -ge 3 -and $_.ReadCount -le 9)
@@ -245,7 +243,5 @@ if ($setupVimrc -eq "y") {
   if (-Not (Test-Path ~\.config\vim\plugins)) {
     New-Item -ItemType Directory -Path .\.config\vim\plugins -Force
   }
-  Copy-Item dotfiles/vim/plugins/* ~/.config/vim/plugins
-
-  Remove-Item -Force dotfiles
+  Copy-Item vim/plugins/* ~/.config/vim/plugins
 }
