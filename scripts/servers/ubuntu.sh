@@ -184,7 +184,12 @@ setup_shell_by_user() {
     [[ -e $file ]] && rm -rf $file
   done
   command -v thefuck >/dev/null && sudo -H -u $user pip3 uninstall thefuck
-  su - "$user" -c "rm \"\$(command -v 'starship')\""
+  if command -v starship >/dev/null; then
+    starship_path=$(command -v starship)
+    if [[ $starship_path != *nix* ]]; then
+      su - "$user" -c "rm \"$starship_path\""
+    fi
+  fi
 
   local nix_packages=(
     # bat (https://github.com/sharkdp/bat)
