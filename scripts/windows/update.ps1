@@ -27,7 +27,7 @@ function Show-Title {
 # npm
 function Update-Npm {
   if (Get-Command npm -ErrorAction SilentlyContinue) {
-    Show-Title -title "Updating npm" -prependLineBreak $false
+    Show-Title -title "Updating npm"
     npm cache clean --force
     npm update --global
     npm cache clean --force
@@ -65,3 +65,15 @@ function Update-WinGet {
     Write-Host "WinGet is not installed or not available in the path." -ForegroundColor Yellow
   }
 }
+
+# Main
+function Main {
+  Show-Title "Starting System Updates" -prependLineBreak $false
+  Update-Npm
+  Update-PowerShellModule
+  Update-Scoop
+  Update-WinGet
+  Show-Title "System Updates Completed"
+}
+
+Main
