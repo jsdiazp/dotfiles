@@ -25,35 +25,97 @@ validate_compatibility() {
 
 # Function to check the system for swap information
 check_swap_info() {
-  sudo swapon --show
-  free -h
+  sudo swapon --show || {
+    log "Failed to retrieve swap information" false
+    exit 1
+  }
+  free -h || {
+    log "Failed to retrieve memory information" false
+    exit 1
+  }
 }
 
 # Function to check available space on the hard drive partition
 check_disk_space() {
-  df -h
+  df -h || {
+    log "Failed to check disk space" false
+    exit 1
+  }
 }
 
 # Function to create a swap file
 create_swap_file() {
-  sudo fallocate -l 4G /swapfile
-  ls -lh /swapfile
+  local total_ram
+  local default_gigabytes
+
+  if [[ -f "/swapfile" ]]; then
+    read -rp "Swapfile exists in root (/). Resize it? (y/n): " should_resize
+
+    if [[ $should_resize == "y" ]]; then
+      sudo swapoff /swapfile || {
+        log "Failed to turn off swap" false
+        exit 1
+      }
+      sudo rm /swapfile || {
+        log "Failed to remove existing swap file" false
+        exit 1
+      }
+    else
+      log "Exiting without making changes." false
+      exit 0
+    fi
+  fi
+
+  total_ram=$(awk '/MemTotal/ { printf "%.2f", $2/1024/1024 }' /proc/meminfo)
+  default_gigabytes=$(printf "%.0f" "$(echo "$total_ram * 2" | bc -l)")
+
+  read -rp "Swap size in GB (Suggested: ${default_gigabytes}G): " gigabytes
+
+  if [[ -z $gigabytes ]]; then
+    gigabytes=$default_gigabytes
+  fi
+
+  if [[ $gigabytes =~ ^[0-9]+$ ]]; then
+    sudo fallocate -l "${gigabytes}G" /swapfile || {
+      log "Failed to create swap file" false
+      exit 1
+    }
+    ls -lh /swapfile
+  else
+    log "Invalid input. Please enter a numeric value for gigabytes." false
+    exit 1
+  fi
 }
 
 # Function to enable the swap file
 enable_swap_file() {
-  sudo chmod 600 /swapfile
+  sudo chmod 600 /swapfile || {
+    log "Failed to set permissions on swap file" false
+    exit 1
+  }
   ls -lh /swapfile
-  sudo mkswap /swapfile
-  sudo swapon /swapfile
+  sudo mkswap /swapfile || {
+    log "Failed to set up swap space" false
+    exit 1
+  }
+  sudo swapon /swapfile || {
+    log "Failed to enable swap file" false
+    exit 1
+  }
   sudo swapon --show
   free -h
 }
 
 # Function to make the swap file permanent
 make_swap_permanent() {
-  sudo cp /etc/fstab /etc/fstab.bak
-  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  sudo cp /etc/fstab /etc/fstab.bak || {
+    log "Failed to back up fstab" false
+    exit 1
+  }
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab || {
+    log "Failed to update fstab" false
+    exit 1
+  }
 }
 
 # Main function to execute all steps
