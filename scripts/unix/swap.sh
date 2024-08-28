@@ -49,7 +49,8 @@ create_swap_file() {
   local default_gigabytes
 
   if [[ -f "/swapfile" ]]; then
-    read -rp "Swapfile exists in root (/). Resize it? (y/n): " should_resize
+    echo -n "Swapfile exists in root (/). Resize it? (y/n): "
+    read should_resize
 
     if [[ $should_resize == "y" ]]; then
       sudo swapoff /swapfile || {
@@ -69,7 +70,8 @@ create_swap_file() {
   total_ram=$(awk '/MemTotal/ { printf "%.2f", $2/1024/1024 }' /proc/meminfo)
   default_gigabytes=$(printf "%.0f" "$(echo "$total_ram * 2" | bc -l)")
 
-  read -rp "Swap size in GB (Suggested: ${default_gigabytes}G): " gigabytes
+  echo -ne "Swap size in GB (Suggested: ${default_gigabytes}G): "
+  read gigabytes
 
   if [[ -z $gigabytes ]]; then
     gigabytes=$default_gigabytes
