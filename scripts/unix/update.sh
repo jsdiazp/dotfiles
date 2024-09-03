@@ -77,6 +77,7 @@ update_rubygem() {
   log "Updating RubyGem Packages"
   if command -v gem >/dev/null; then
     gem cleanup
+    gem update --system
     gem update
     gem cleanup
   fi

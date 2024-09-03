@@ -1,3 +1,9 @@
+# Logs
+*.log
+
+# tmux
+tmux/plugins
+
 # MacOS
 .DS_Store
 

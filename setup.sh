@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Get the absolute path of the script
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+# Get the directory of the script
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
 # Define colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -11,34 +16,35 @@ BOLD='\033[1m'
 RESET='\033[0m'
 
 unix_scripts=(
-  "scripts/unix/shell.sh"
-  "scripts/unix/swap.sh"
-  "scripts/unix/update.sh"
+  "$SCRIPT_DIR/scripts/unix/docker.sh"
+  "$SCRIPT_DIR/scripts/unix/shell.sh"
+  "$SCRIPT_DIR/scripts/unix/swap.sh"
+  "$SCRIPT_DIR/scripts/unix/update.sh"
 )
 server_scripts=(
-  "scripts/servers/ubuntu.sh"
+  "$SCRIPT_DIR/scripts/servers/ubuntu.sh"
 )
 
 # Quit the script if the user chooses to exit
-quit() {
+handle_exit() {
   if [[ "$choice" == "q" ]]; then
     echo -e "${BLUE}Happy coding!${RESET}"
     exit 0
   fi
 }
 
-# Handle other non-menu actions like quitting
-other_options_actions() {
-  quit
+# Handle additional non-menu actions like quitting
+additional_options_actions() {
+  handle_exit
   if [[ "$choice" == "b" ]]; then
     return 1
   fi
 }
 
 # Validate the user's menu selection
-wrong_option_validation() {
-  local alternatives=("$@")
-  if ! [[ "$choice" =~ ^([0-9]|b)+$ ]] || [[ "$choice" -ge "${#alternatives[@]}" ]]; then
+validate_choice() {
+  local options=("$@")
+  if ! [[ "$choice" =~ ^([0-9]|b)+$ ]] || [[ "$choice" -ge "${#options[@]}" ]]; then
     echo -e "${RED}Wrong option. Please try again.${RESET}\n"
     return 1
   fi
@@ -54,7 +60,7 @@ display_options() {
 }
 
 # Display additional options like quitting
-display_other_options() {
+display_additional_options() {
   echo -e "\n${GREEN}Other options:\n${RESET}"
   echo -e "${YELLOW}b) Back to main menu${RESET}"
   echo -e "${YELLOW}q) Quit${RESET}\n"
@@ -72,68 +78,69 @@ execute_script() {
   fi
 }
 
-# Display the main menu for a given set of alternatives
+# Display the menu and handle user selections
 display_menu() {
-  echo -e "${BOLD}${GREEN}$1${RESET}\n"
-
+  local title="$1"
   shift
-  local alternatives=("$@")
+  local options=("$@")
 
-  display_options "${alternatives[@]}"
-  display_other_options
+  echo -e "${BOLD}${GREEN}$title${RESET}\n"
+
+  display_options "${options[@]}"
+  display_additional_options
 
   IFS='/'
 
-  read -rp "[${!alternatives[*]}/b/q]: " choice
+  read -rp "[${!options[*]}/b/q]: " choice
 
   unset IFS
 
   echo -e ""
 
-  other_options_actions || return 1
-  wrong_option_validation "${alternatives[@]}" || return 1
+  additional_options_actions || return 1
+  validate_choice "${options[@]}" || return 1
 
   return 0
 }
 
 # Menu for UNIX-based OS setup options
 unix_menu() {
-  local alternatives=(
+  local options=(
+    "Setup Docker"
     "Setup shell"
     "Setup swap"
     "Update OS"
   )
 
-  display_menu "What do you want to do in your UNIX-based OS?" "${alternatives[@]}" || return
-
-  execute_script "${unix_scripts[$choice]}" zsh
+  if display_menu "What do you want to do in your UNIX-based OS?" "${options[@]}"; then
+    execute_script "${unix_scripts[$choice]}" zsh
+  fi
 }
 
 # Menu for server OS setup options
 server_menu() {
-  local alternatives=(
+  local options=(
     "Ubuntu"
   )
 
-  display_menu "What server OS do you want to set up?" "${alternatives[@]}" || return
-
-  execute_script "${server_scripts[$choice]}" zsh
+  if display_menu "What server OS do you want to set up?" "${options[@]}"; then
+    execute_script "${server_scripts[$choice]}" zsh
+  fi
 }
 
 # Main menu to select the general task
 main_menu() {
-  local alternatives=(
+  local options=(
     "Setup UNIX-based OS"
     "Setup server"
   )
 
-  display_menu "What do you want to do?" "${alternatives[@]}" || return
-
-  case $choice in
-  0) unix_menu ;;
-  1) server_menu ;;
-  esac
-
+  if display_menu "What do you want to do?" "${options[@]}"; then
+    case $choice in
+    0) unix_menu ;;
+    1) server_menu ;;
+    esac
+  fi
 }
 
 main() {
