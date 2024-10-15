@@ -251,10 +251,6 @@ install_tools() {
   tools+=(tmux)
   configure_tool "tmux" 'alias tm="tmux attach || tmux"'
 
-  ## tpm (https://github.com/tmux-plugins/tpm)
-  ## tmux Plugin Manager
-  git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
-
   ## Vim (https://github.com/vim/vim)
   ## Text editor
   tools+=(vim)
@@ -288,6 +284,7 @@ configure_dotfiles() {
   ## Configure tmux
   [[ -d ~/.config/tmux ]] && rm -rf ~/.config/tmux
   ln -sf "$PWD/tmux" ~/.config/tmux
+  git clone https://github.com/tmux-plugins/tpm ~/.config/tmux/plugins/tpm
 
   ## Configure Vim
   [[ -d ~/.config/vim ]] && rm -rf ~/.config/vim
