@@ -99,6 +99,7 @@ update_homebrew() {
     brew update --auto-update
     brew update
     brew upgrade
+    brew upgrade --cask
     brew autoremove
     brew cleanup
     brew doctor
