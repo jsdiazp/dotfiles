@@ -1,146 +1,101 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# setup.sh — composition root for dotfiles provisioning.
+#
+# Patterns:
+#   - Composition root: this file owns menu flow only; every task lives in
+#     scripts/unix/* or scripts/servers/* and is dispatched by table.
+#   - Configuration as data: menu labels and script paths are declared once
+#     (unix_labels/unix_script_for, server_labels/server_script_for).
+#   - Shared behavior (colors, logging, menu) is sourced from
+#     scripts/shared/* — no duplicated menu code.
+#
+# Portable: bash >= 3.2 and zsh. macOS `readlink -f` is NOT used.
 
-# Get the absolute path of the script
-SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
-# Get the directory of the script
-SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+set -euo pipefail
 
-# Define colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-# CYAN='\033[0;36m'
-# WHITE='\033[0;37m'
-BOLD='\033[1m'
-RESET='\033[0m'
+# Portable script dir (no GNU `readlink -f`, which is missing on macOS).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-unix_scripts=(
-  "$SCRIPT_DIR/scripts/unix/docker.sh"
-  "$SCRIPT_DIR/scripts/unix/shell.sh"
-  "$SCRIPT_DIR/scripts/unix/swap.sh"
-  "$SCRIPT_DIR/scripts/unix/update.sh"
-)
-server_scripts=(
-  "$SCRIPT_DIR/scripts/servers/ubuntu.sh"
-)
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/scripts/shared/common.sh"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/scripts/shared/menu.sh"
 
-# Quit the script if the user chooses to exit
-handle_exit() {
-  if [[ "$choice" == "q" ]]; then
-    echo -e "${BLUE}Happy coding!${RESET}"
-    exit 0
-  fi
+# ---------------------------------------------------------------------------
+# Declarative task registry (label -> script path via case dispatch)
+# ---------------------------------------------------------------------------
+unix_script_for() {
+  case "$1" in
+    1) printf '%s\n' "$SCRIPT_DIR/scripts/unix/docker.sh" ;;
+    2) printf '%s\n' "$SCRIPT_DIR/scripts/unix/shell.sh" ;;
+    3) printf '%s\n' "$SCRIPT_DIR/scripts/unix/swap.sh" ;;
+    4) printf '%s\n' "$SCRIPT_DIR/scripts/unix/update.sh" ;;
+    *) return 1 ;;
+  esac
 }
 
-# Handle additional non-menu actions like quitting
-additional_options_actions() {
-  handle_exit
-  if [[ "$choice" == "b" ]]; then
-    return 1
-  fi
+server_script_for() {
+  case "$1" in
+    1) printf '%s\n' "$SCRIPT_DIR/scripts/servers/ubuntu.sh" ;;
+    *) return 1 ;;
+  esac
 }
 
-# Validate the user's menu selection
-validate_choice() {
-  local options=("$@")
-  if ! [[ "$choice" =~ ^([0-9]|b)+$ ]] || [[ "$choice" -ge "${#options[@]}" ]]; then
-    echo -e "${RED}Wrong option. Please try again.${RESET}\n"
-    return 1
-  fi
-  return 0
-}
-
-# Display a list of options to the user
-display_options() {
-  local opts=("$@")
-  for i in "${!opts[@]}"; do
-    echo -e "${YELLOW}$i) ${opts[$i]}${RESET}"
-  done
-}
-
-# Display additional options like quitting
-display_additional_options() {
-  echo -e "\n${GREEN}Other options:\n${RESET}"
-  echo -e "${YELLOW}b) Back to main menu${RESET}"
-  echo -e "${YELLOW}q) Quit${RESET}\n"
-}
-
-# Execute the chosen script if it exists
+# Execute the chosen script if it exists.
 execute_script() {
-  local script=$1
-  local interpreter=$2
-  if [[ -f "$script" ]]; then
-    "$interpreter" "$script"
-    echo -e "\n${BLUE}Script executed successfully.${RESET}\n"
+  _script="$1"
+  _interpreter="${2:-bash}"
+  if [ ! -f "$_script" ]; then
+    error "Script not found: $_script"
+    return 1
+  fi
+  if ! command -v "$_interpreter" >/dev/null 2>&1; then
+    error "Interpreter not found: $_interpreter (needed for $_script)"
+    return 1
+  fi
+  "$_interpreter" "$_script"
+  printf '\n%b\n\n' "${BLUE}Script executed successfully.${RESET}"
+  unset _script _interpreter
+}
+
+# Preferred interpreter for task scripts: zsh when present (scripts target
+# zsh), otherwise bash. Centralizes the old hardcoded `zsh` argument.
+task_interpreter() {
+  if command -v zsh >/dev/null 2>&1; then
+    printf 'zsh\n'
   else
-    echo "Script not found: $script"
+    printf 'bash\n'
   fi
 }
 
-# Display the menu and handle user selections
-display_menu() {
-  local title="$1"
-  shift
-  local options=("$@")
-
-  echo -e "${BOLD}${GREEN}$title${RESET}\n"
-
-  display_options "${options[@]}"
-  display_additional_options
-
-  IFS='/'
-
-  read -rp "[${!options[*]}/b/q]: " choice
-
-  unset IFS
-
-  echo -e ""
-
-  additional_options_actions || return 1
-  validate_choice "${options[@]}" || return 1
-
+unix_menu() {
+  if display_menu "What do you want to do in your UNIX-based OS?" \
+    "Setup Docker" "Setup shell" "Setup swap" "Update OS"; then
+    _script="$(unix_script_for "$MENU_CHOICE")"
+    execute_script "$_script" "$(task_interpreter)" || true
+  fi
+  # Back (return 1) or invalid input simply returns to main menu.
   return 0
 }
 
-# Menu for UNIX-based OS setup options
-unix_menu() {
-  local options=(
-    "Setup Docker"
-    "Setup shell"
-    "Setup swap"
-    "Update OS"
-  )
-
-  if display_menu "What do you want to do in your UNIX-based OS?" "${options[@]}"; then
-    execute_script "${unix_scripts[$choice]}" zsh
-  fi
-}
-
-# Menu for server OS setup options
 server_menu() {
-  local options=(
-    "Ubuntu"
-  )
-
-  if display_menu "What server OS do you want to set up?" "${options[@]}"; then
-    execute_script "${server_scripts[$choice]}" zsh
+  if display_menu "What server OS do you want to set up?" "Ubuntu"; then
+    _script="$(server_script_for "$MENU_CHOICE")"
+    execute_script "$_script" "$(task_interpreter)" || true
   fi
+  return 0
 }
 
-# Main menu to select the general task
 main_menu() {
-  local options=(
-    "Setup UNIX-based OS"
-    "Setup server"
-  )
-
-  if display_menu "What do you want to do?" "${options[@]}"; then
-    case $choice in
-    0) unix_menu ;;
-    1) server_menu ;;
+  if display_menu "What do you want to do?" \
+    "Setup UNIX-based OS" "Setup server"; then
+    case "$MENU_CHOICE" in
+      1) unix_menu ;;
+      2) server_menu ;;
     esac
   fi
+  return 0
 }
 
 main() {
@@ -149,4 +104,4 @@ main() {
   done
 }
 
-main
+main "$@"

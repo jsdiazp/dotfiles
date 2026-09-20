@@ -1,79 +1,77 @@
-# Functions
+# update.ps1 — update Windows packages and global tooling.
+#
+# Patterns: declarative updater registry + Invoke-Step boundary (one failure
+# never aborts the run; exit code reflects failure count).
 
-function Show-Title {
-  param (
-    [String]$title,
-    [Boolean]$prependLineBreak = $true,
-    [Boolean]$appendLineBreak = $true
-  )
+#Requires -Version 5.1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-  if (-not [string]::IsNullOrWhiteSpace($title)) {
-    $formattedTitle = "⚡️$title"
+. "$PSScriptRoot/lib/Common.ps1"
 
-    if ($prependLineBreak) {
-      $formattedTitle = "`n$formattedTitle"
-    }
-
-    if ($appendLineBreak) {
-      $formattedTitle = "$formattedTitle`n"
-    }
-
-    Write-Host -ForegroundColor Magenta $formattedTitle
-  }
-}
-
-# Package Managers
-
-# npm
 function Update-Npm {
-  if (Get-Command npm -ErrorAction SilentlyContinue) {
-    Show-Title -title "Updating npm"
-    npm cache clean --force
+  Invoke-Step -Name 'Updating npm' -SkipWhen 'npm' -ScriptBlock {
+    npm install -g npm@latest
     npm update --global
-    npm cache clean --force
-  } else {
-    Write-Host "npm is not installed or not available in the path." -ForegroundColor Yellow
   }
 }
 
-# PowerShellGet
 function Update-PowerShellModule {
-  Show-Title -title "Updating PowerShell Modules"
-  try {
-    Update-Module
-  } catch {
-    Write-Host "Error updating PowerShell modules: $_" -ForegroundColor Red
+  Invoke-Step -Name 'Updating PowerShell Modules' -ScriptBlock {
+    try {
+      Update-Module -ErrorAction Stop
+    } catch {
+      Write-Host "Error updating PowerShell modules: $_" -ForegroundColor Red
+      throw
+    }
   }
 }
 
-# Scoop
 function Update-Scoop {
-  if (Get-Command scoop -ErrorAction SilentlyContinue) {
-    Show-Title -title "Updating Scoop"
-    scoop update --all
-  } else {
-    Write-Host "Scoop is not installed or not available in the path." -ForegroundColor Yellow
+  Invoke-Step -Name 'Updating Scoop' -SkipWhen 'scoop' -ScriptBlock {
+    scoop update *
+    scoop cleanup *
+    scoop cache rm *
   }
 }
 
-# WinGet
 function Update-WinGet {
-  if (Get-Command winget -ErrorAction SilentlyContinue) {
-    Show-Title -title "Updating WinGet"
-    winget upgrade --all
-  } else {
-    Write-Host "WinGet is not installed or not available in the path." -ForegroundColor Yellow
+  Invoke-Step -Name 'Updating WinGet' -SkipWhen 'winget' -ScriptBlock {
+    winget upgrade --all `
+      --include-unknown `
+      --silent `
+      --disable-interactivity `
+      --accept-source-agreements `
+      --accept-package-agreements
   }
 }
 
-# Main
 function Main {
-  Show-Title "Starting System Updates" -prependLineBreak $false
-  Update-Npm
-  Update-PowerShellModule
-  Update-Scoop
-  Update-WinGet
-  Show-Title "System Updates Completed"
+  [CmdletBinding()]
+  param (
+    [string[]]$Only = @('Npm', 'PowerShellModule', 'Scoop', 'WinGet')
+  )
+  Reset-StepFailures
+  Show-Title 'Starting System Updates' -NoPrependBreak
+  $updaters = @{
+    Npm               = ${function:Update-Npm}
+    PowerShellModule  = ${function:Update-PowerShellModule}
+    Scoop             = ${function:Update-Scoop}
+    WinGet            = ${function:Update-WinGet}
+  }
+  foreach ($name in $Only) {
+    if ($updaters.ContainsKey($name)) {
+      & $updaters[$name]
+    } else {
+      Write-Host "Unknown updater: $name" -ForegroundColor Yellow
+    }
+  }
+  Show-Title 'System Updates Completed'
+  $failures = Get-StepFailureCount
+  if ($failures -gt 0) {
+    Write-Host "Completed with $failures failure(s)." -ForegroundColor Red
+    exit 1
+  }
 }
 
-Main
+Main @args

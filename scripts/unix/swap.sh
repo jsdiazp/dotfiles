@@ -1,140 +1,125 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
+# swap.sh — create, enable, and persist a swap file on Linux.
+#
+# Patterns:
+#   - Template-Method pipeline: main() is an ordered run_step list.
+#   - Idempotency: fstab entry is added once (grep guard); backup is kept.
+#   - Fail-fast with clear context instead of 10x copy-pasted `|| { ... }`.
+#   - No `bc` dependency (missing on minimal images) — awk only.
 
-# Function to log messages with timestamps
-log() {
-  local message=$1
-  local add_newline_before=${2:-true}
-  local add_newline_after=${3:-true}
-  local formatted_message=""
+set -euo pipefail
 
-  if [[ -n $message ]]; then
-    formatted_message="\033[0;35m[$(date +"%Y-%m-%d %H:%M:%S")] ⚡️ $message\033[0m"
-    [[ $add_newline_before == true ]] && formatted_message="\n$formatted_message"
-    [[ $add_newline_after == true ]] && formatted_message="$formatted_message\n"
-    echo -e "$formatted_message"
-  fi
-}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../shared/common.sh"
+
+SWAPFILE="/swapfile"
+FSTAB_LINE="/swapfile none swap sw 0 0"
+
+# sudo is a no-op when already root (minimal containers often lack sudo).
+SUDO=""
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+  SUDO="sudo"
+fi
 
 # Function to validate operating system compatibility
 validate_compatibility() {
-  if ! command -v swapon >/dev/null; then
-    echo "Unsupported operating system"
-    exit 1
+  if [ ! -f /proc/meminfo ]; then
+    die "Unsupported operating system: /proc/meminfo not found (Linux only)."
   fi
+  require_cmd swapon
+  require_cmd free
 }
 
-# Function to check the system for swap information
+# Function to check the system for swap information (informational probes:
+# `swapon --show` exits non-zero when no swap exists, so these must NOT run
+# via run_step, which treats any failure as fatal).
 check_swap_info() {
-  sudo swapon --show || {
-    log "Failed to retrieve swap information" false
-    exit 1
-  }
-  free -h || {
-    log "Failed to retrieve memory information" false
-    exit 1
-  }
+  log "Retrieving swap information" false false
+  $SUDO swapon --show || info "(no active swap)"
+  log "Retrieving memory information" false false
+  free -h
 }
 
 # Function to check available space on the hard drive partition
 check_disk_space() {
-  df -h || {
-    log "Failed to check disk space" false
-    exit 1
-  }
+  run_step "Checking disk space" df -h /
+}
+
+# suggested_swap_gb — 2x total RAM, rounded. awk only (no bc).
+suggested_swap_gb() {
+  awk '/MemTotal/ { printf "%.0f", ($2/1024/1024)*2 }' /proc/meminfo
 }
 
 # Function to create a swap file
 create_swap_file() {
-  local total_ram
-  local default_gigabytes
-
-  if [[ -f "/swapfile" ]]; then
-    echo -n "Swapfile exists in root (/). Resize it? (y/n): "
-    read should_resize
-
-    if [[ $should_resize == "y" ]]; then
-      sudo swapoff /swapfile || {
-        log "Failed to turn off swap" false
-        exit 1
-      }
-      sudo rm /swapfile || {
-        log "Failed to remove existing swap file" false
-        exit 1
-      }
-    else
-      log "Exiting without making changes." false
-      exit 0
-    fi
+  if [ -f "$SWAPFILE" ]; then
+    printf 'Swapfile exists in root (/). Resize it? (y/n): '
+    _resize=""
+    IFS= read -r _resize || true
+    case "$_resize" in
+      [Yy]|[Yy][Ee][Ss])
+        run_step "Turning off existing swap" $SUDO swapoff "$SWAPFILE"
+        run_step "Removing existing swap file" $SUDO rm -f "$SWAPFILE"
+        ;;
+      *)
+        info "Exiting without making changes."
+        exit 0
+        ;;
+    esac
+    unset _resize
   fi
 
-  total_ram=$(awk '/MemTotal/ { printf "%.2f", $2/1024/1024 }' /proc/meminfo)
-  default_gigabytes=$(printf "%.0f" "$(echo "$total_ram * 2" | bc -l)")
-
-  echo -ne "Swap size in GB (Suggested: ${default_gigabytes}G): "
-  read gigabytes
-
-  if [[ -z $gigabytes ]]; then
-    gigabytes=$default_gigabytes
+  _default_gb="$(suggested_swap_gb)"
+  printf 'Swap size in GB (Suggested: %sG): ' "$_default_gb"
+  _gigabytes=""
+  IFS= read -r _gigabytes || true
+  if [ -z "$_gigabytes" ]; then
+    _gigabytes="$_default_gb"
   fi
+  case "$_gigabytes" in
+    *[!0-9]* | "" | "0")
+      die "Invalid input. Please enter a positive numeric value for gigabytes."
+      ;;
+  esac
 
-  if [[ $gigabytes =~ ^[0-9]+$ ]]; then
-    sudo fallocate -l "${gigabytes}G" /swapfile || {
-      log "Failed to create swap file" false
-      exit 1
-    }
-    ls -lh /swapfile
-  else
-    log "Invalid input. Please enter a numeric value for gigabytes." false
-    exit 1
+  # fallocate fails on tmpfs/ZFS/btrfs — fall back to dd.
+  if ! $SUDO fallocate -l "${_gigabytes}G" "$SWAPFILE"; then
+    warn "fallocate failed, falling back to dd (slower but portable)."
+    run_step "Creating swap file with dd" $SUDO dd if=/dev/zero of="$SWAPFILE" bs=1G count="$_gigabytes" status=progress
   fi
+  ls -lh "$SWAPFILE"
+  unset _default_gb _gigabytes
 }
 
 # Function to enable the swap file
 enable_swap_file() {
-  sudo chmod 600 /swapfile || {
-    log "Failed to set permissions on swap file" false
-    exit 1
-  }
-  ls -lh /swapfile
-  sudo mkswap /swapfile || {
-    log "Failed to set up swap space" false
-    exit 1
-  }
-  sudo swapon /swapfile || {
-    log "Failed to enable swap file" false
-    exit 1
-  }
-  sudo swapon --show
+  run_step "Setting swap file permissions" $SUDO chmod 600 "$SWAPFILE"
+  ls -lh "$SWAPFILE"
+  run_step "Formatting swap space" $SUDO mkswap "$SWAPFILE"
+  run_step "Enabling swap file" $SUDO swapon "$SWAPFILE"
+  $SUDO swapon --show
   free -h
 }
 
-# Function to make the swap file permanent
+# Function to make the swap file permanent (idempotent: no duplicate lines).
 make_swap_permanent() {
-  sudo cp /etc/fstab /etc/fstab.bak || {
-    log "Failed to back up fstab" false
-    exit 1
-  }
-  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab || {
-    log "Failed to update fstab" false
-    exit 1
-  }
+  if grep -qF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
+    info "fstab already contains swap entry; skipping."
+    return 0
+  fi
+  run_step "Backing up fstab" $SUDO cp -a /etc/fstab "/etc/fstab.bak.$(date +%Y%m%d%H%M%S)"
+  printf '%s\n' "$FSTAB_LINE" | $SUDO tee -a /etc/fstab >/dev/null
 }
 
 # Main function to execute all steps
 main() {
-  log "Validating system compatibility" false
-  validate_compatibility
-  log "Checking the System for Swap Information"
-  check_swap_info
-  log "Checking Available Space on the Hard Drive Partition"
-  check_disk_space
-  log "Creating a Swap File"
-  create_swap_file
-  log "Enabling the Swap File"
-  enable_swap_file
-  log "Making the Swap File Permanent"
-  make_swap_permanent
+  run_step "Validating system compatibility" validate_compatibility
+  run_step "Checking the System for Swap Information" check_swap_info
+  run_step "Checking Available Space on the Hard Drive Partition" check_disk_space
+  run_step "Creating a Swap File" create_swap_file
+  run_step "Enabling the Swap File" enable_swap_file
+  run_step "Making the Swap File Permanent" make_swap_permanent
 }
 
-# Execute the main function
-main
+main "$@"

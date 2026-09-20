@@ -1,333 +1,336 @@
-#!/usr/bin/env zsh
-# Shell
-# Interface to interact with the operating system
+#!/usr/bin/env bash
+# shell.sh — provision ZSH + Homebrew + CLI tools + dotfile symlinks.
+#
+# Refactor notes (high-level patterns):
+#   - Decomposed god-functions into one function per concern; main() is a
+#     Template-Method pipeline of run_step stages.
+#   - Configuration as data: BREW_TOOLS / APT_DEPS_* lists and zshrc_block()
+#     cases replace scattered imperative blocks.
+#   - Idempotency: zshrc_block() wraps append_once (re-runs are no-ops),
+#     symlinks use safe_link (repo-root anchored, not $PWD), clones use
+#     clone_or_update (no blind rm -rf, no clone-over-existing failure).
+#   - Adapters: pkg_manager()/os_family() from common.sh replace the
+#     apt-vs-yum branches; `command -v zsh` replaces hardcoded /bin/zsh.
+#   - No `source ~/.zshrc` mid-script (side-effectful, often a no-op for
+#     nvm/brew in non-interactive shells).
 
-# Log messages with timestamps
-log() {
-  local message=$1
-  local add_newline_before=${2:-true}
-  local add_newline_after=${3:-true}
-  local formatted_message=""
+set -euo pipefail
 
-  if [[ -n $message ]]; then
-    formatted_message="\033[0;35m[$(date +"%Y-%m-%d %H:%M:%S")] ⚡️ $message\033[0m"
-    [[ $add_newline_before == true ]] && formatted_message="\n$formatted_message"
-    [[ $add_newline_after == true ]] && formatted_message="$formatted_message\n"
-    echo -e "$formatted_message"
-  fi
-}
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../shared/common.sh"
+DOTFILES_ROOT="$(repo_root_from "$SCRIPT_DIR")"
 
-# Detect the operating system and architecture
-detect_os() {
-  OS="$(uname -s)"
-  ARCH="$(uname -m)"
-}
+DOTFILES_OS="$(os_family)"
 
-# Install ZSH based on the package manager
-install_zsh() {
-  if command -v apt >/dev/null; then
-    sudo apt update
-    sudo apt install -y zsh
-  elif command -v yum >/dev/null; then
-    sudo yum update
-    sudo yum install -y zsh
-  else
-    log "Unsupported package manager. Please install ZSH manually." false
-    exit 1
-  fi
-}
+# ---------------------------------------------------------------------------
+# Declarative manifests
+# ---------------------------------------------------------------------------
+BREW_TAPS="oven-sh/bun"
+BREW_TOOLS="bat btop bun fastfetch fd fzf lazydocker lazygit lsd ripgrep starship thefuck tmux vim zoxide"
 
-# Install Oh My Zsh
-install_oh_my_zsh() {
-  [[ -d ~/.oh-my-zsh ]] && rm -rf ~/.oh-my-zsh
-  [[ -f ~/.zshrc ]] && rm ~/.zshrc
-  [[ -f ~/.zprofile ]] && rm -rf ~/.zprofile
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-}
+ZSH_PLUGINS="git zsh-autosuggestions zsh-syntax-highlighting zsh-nvm"
 
-# Install ZSH Plugin
-install_zsh_plugin() {
-  local repo="$1"
-  local dir="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/$(basename "$repo")"
+APT_DEPS_DEBIAN="build-essential curl file git procps"
+APT_DEPS_FEDORA="curl file git procps-ng"
 
-  if [[ -d "$dir" ]]; then
-    log "Plugin directory $dir already exists. Removing and reinstalling $repo." false
-    rm -rf "$dir"
-  fi
-
-  git clone "https://github.com/$repo" "$dir"
-}
-
-# Activate the specified ZSH plugins in .zshrc
-activate_zsh_plugins() {
-  local zsh_plugins=("$@")
-  case "$OS" in
-  Darwin*) sed -i '' -e "s/plugins=(git)/plugins=(${zsh_plugins[*]})/" ~/.zshrc ;;
-  Linux*) sed -i "s/plugins=(git)/plugins=(${zsh_plugins[*]})/" ~/.zshrc ;;
+# zshrc_block <id> — prints the snippet body for a named block.
+# (case-dispatch instead of an associative array for bash 3.2 compat.)
+zshrc_block() {
+  case "$1" in
+    autosuggest) printf '%s\n' "ZSH_AUTOSUGGEST_STRATEGY=(history completion)" ;;
+    highlight) printf '%s\n' "ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)" ;;
+    homebrew) printf '%s\n' "eval \"$2\"" ;;
+    fzf) printf '%s\n' "source <(fzf --zsh)" ;;
+    starship) printf '%s\n' 'eval "$(starship init zsh)"' ;;
+    thefuck) printf '%s\n' 'eval "$(thefuck --alias)"' ;;
+    tmux) printf '%s\n' 'alias tm="tmux attach || tmux"' ;;
+    zoxide) printf '%s\n' 'eval "$(zoxide init zsh)"' ;;
+    *) die "Unknown zshrc block: $1" ;;
   esac
 }
 
-# Set up ZSH and install plugins
-setup_zsh() {
-  local zsh_plugins=()
-
-  if [[ "$OS" == Linux* ]]; then
-    install_zsh
-  fi
-
-  ## Oh My Zsh (https://ohmyz.sh/)
-  ## Enhances the functionality of zsh
-  install_oh_my_zsh || {
-    log "Failed to install Oh My Zsh." false
-    exit 1
-  }
-
-  ## ZSH Autosuggestions (https://github.com/zsh-users/zsh-autosuggestion)
-  ## Suggests commands as you type based on history and completions
-  install_zsh_plugin zsh-users/zsh-autosuggestions || {
-    log "Failed to install zsh-autosuggestions." false
-    exit 1
-  }
-  configure_tool "ZSH Autosuggestions" "ZSH_AUTOSUGGEST_STRATEGY=(history completion)"
-
-  ## ZSH Syntax Highlighting (https://github.com/zsh-users/zsh-syntax-highlighting)
-  ## Highlights commands as you type for better readabilit
-  install_zsh_plugin zsh-users/zsh-syntax-highlighting || {
-    log "Failed to install zsh-syntax-highlighting." false
-    exit 1
-  }
-  configure_tool "ZSH Syntax Highlighting" "ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)"
-
-  ## zsh-nvm (https://github.com/lukechilds/zsh-nvm)
-  ## Node.js version manager
-  install_zsh_plugin lukechilds/zsh-nvm || {
-    log "Failed to install zsh-nvm." false
-    exit 1
-  }
-
-  zsh_plugins=(
-    git
-    zsh-autosuggestions
-    zsh-syntax-highlighting
-    zsh-nvm
-  )
-  activate_zsh_plugins "${zsh_plugins[@]}"
-
-  source ~/.zshrc
-}
-
-# Activate ZSH as the default shell
-activate_zsh() {
-  chsh -s /bin/zsh
-  source ~/.zshrc
-}
-
-# Install node.js (https://github.com/nodejs/node)
-# JavaScript runtime
-install_node() {
-  nvm install --lts --latest-npm
-  nvm use --lts
-}
-
-# Install Homebrew (https://brew.sh)
-# Package manager
-install_homebrew() {
-  local breweval=""
-  local packages=()
-
-  ## Uninstall any existing Homebrew
-  [[ -e $HOMEBREW_PREFIX ]] && /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)"
-
-  ## Requirements (https://docs.brew.sh/Homebrew-on-Linux#requirements)
-
-  if [[ $OS == Linux* ]]; then
-    ### Debian or Ubuntu
-    if command -v apt >/dev/null; then
-      packages=(
-        build-essential
-        curl
-        file
-        git
-        procps
-      )
-      sudo apt install -y "${packages[@]}"
-    fi
-
-    ### Fedora, CentOS, or Red Hat
-    if command -v yum >/dev/null; then
-      packages=(
-        curl
-        file
-        git
-        procps-ng
-      )
-      sudo yum groupinstall -y 'Development Tools'
-      sudo yum install -y "${packages[@]}"
-    fi
-  fi
-
-  ## Installation
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-  ## Configuration
-  case "$OS" in
-  Darwin*)
-    case "$ARCH" in
-    arm64 | aarch64) breweval="\$(/opt/homebrew/bin/brew shellenv)" ;;
-    x86_64) breweval="\$(/usr/local/bin/brew shellenv)" ;;
-    esac
-    ;;
-  Linux*) breweval="\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" ;;
-  esac
-  configure_tool "Homebrew" "eval \"$breweval\""
-
-  ## Post-configuration
-  source ~/.zshrc
-}
-
-# Configure additional tools
+# Configure additional tools (idempotent marked block).
 configure_tool() {
-  echo -e "\n# $1\n$2" >>~/.zshrc
+  _name="$1"
+  _code="$2"
+  _id="$(printf '%s' "$_name" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
+  append_once "$HOME/.zshrc" "$_id" "# $_name
+$_code"
+  unset _name _code _id
 }
 
-# Install additional tools
+# Detect the operating system and architecture (sets DOTFILES_OS/ARCH).
+detect_os() {
+  DOTFILES_OS="$(os_family)"
+  DOTFILES_ARCH="$(uname -m 2>/dev/null || printf 'unknown')"
+  export DOTFILES_OS DOTFILES_ARCH
+}
+
+# Install ZSH based on the package manager (adapter over apt/dnf/yum).
+install_zsh() {
+  have_cmd zsh && return 0
+  _sudo="$(sudo_if_needed)"
+  case "$(pkg_manager)" in
+    apt)
+      run_step "Updating apt index" $_sudo apt-get update
+      run_step "Installing zsh" $_sudo apt-get install -y zsh
+      ;;
+    dnf)
+      run_step "Installing zsh" $_sudo dnf install -y zsh
+      ;;
+    yum)
+      run_step "Installing zsh" $_sudo yum install -y zsh
+      ;;
+    *)
+      die "Unsupported package manager. Please install ZSH manually."
+      ;;
+  esac
+  unset _sudo
+}
+
+# Install Oh My Zsh (idempotent: fresh template only on first install;
+# user .zshrc — including append_once blocks — is preserved on re-runs).
+install_oh_my_zsh() {
+  _fresh=0
+  if [ ! -d "$HOME/.oh-my-zsh/.git" ]; then
+    _fresh=1
+  fi
+  clone_or_update "https://github.com/ohmyzsh/ohmyzsh.git" "$HOME/.oh-my-zsh"
+  if [ "$_fresh" -eq 1 ] || [ ! -f "$HOME/.zshrc" ]; then
+    if [ -e "$HOME/.zshrc" ] || [ -L "$HOME/.zshrc" ]; then
+      backup_once "$HOME/.zshrc"
+      rm -f "$HOME/.zshrc"
+    fi
+    cp "$HOME/.oh-my-zsh/templates/zshrc.zsh-template" "$HOME/.zshrc"
+  fi
+  if [ -e "$HOME/.zprofile" ] || [ -L "$HOME/.zprofile" ]; then
+    backup_once "$HOME/.zprofile"
+    rm -f "$HOME/.zprofile"
+  fi
+  unset _fresh
+}
+
+# Install ZSH Plugin (idempotent).
+install_zsh_plugin() {
+  _repo="$1"
+  _dir="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/$(basename "$_repo")"
+  clone_or_update "https://github.com/${_repo}.git" "$_dir"
+  unset _repo _dir
+}
+
+# Activate the specified ZSH plugins in .zshrc.
+activate_zsh_plugins() {
+  _plugins="$*"
+  require_cmd sed
+  if ! grep -q '^plugins=' "$HOME/.zshrc" 2>/dev/null; then
+    warn "No plugins= line in ~/.zshrc; appending one."
+    printf '\nplugins=(%s)\n' "$_plugins" >>"$HOME/.zshrc"
+    return 0
+  fi
+  case "$DOTFILES_OS" in
+    darwin) sed -i '' -e "s/^plugins=.*/plugins=(${_plugins})/" "$HOME/.zshrc" ;;
+    *) sed -i "s/^plugins=.*/plugins=(${_plugins})/" "$HOME/.zshrc" ;;
+  esac
+  unset _plugins
+}
+
+# Set up ZSH and install plugins.
+setup_zsh() {
+  case "$DOTFILES_OS" in
+    linux | wsl) install_zsh ;;
+  esac
+
+  run_step "Installing Oh My Zsh" install_oh_my_zsh
+
+  run_step "Installing zsh-autosuggestions" install_zsh_plugin zsh-users/zsh-autosuggestions
+  configure_tool "ZSH Autosuggestions" "$(zshrc_block autosuggest)"
+
+  run_step "Installing zsh-syntax-highlighting" install_zsh_plugin zsh-users/zsh-syntax-highlighting
+  configure_tool "ZSH Syntax Highlighting" "$(zshrc_block highlight)"
+
+  run_step "Installing zsh-nvm" install_zsh_plugin lukechilds/zsh-nvm
+
+  # shellcheck disable=SC2086
+  activate_zsh_plugins $ZSH_PLUGINS
+}
+
+# Activate ZSH as the default shell (portable path, not hardcoded /bin/zsh).
+activate_zsh() {
+  _zsh="$(command -v zsh)"
+  if [ -z "$_zsh" ]; then
+    die "zsh not found on PATH; cannot chsh."
+  fi
+  run_step "Setting default shell to $_zsh" chsh -s "$_zsh"
+  unset _zsh
+}
+
+# Install node.js via nvm when the shell integration is available.
+install_node() {
+  if ! command -v nvm >/dev/null 2>&1; then
+    if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
+      # shellcheck disable=SC1091
+      . "${NVM_DIR:-$HOME/.nvm}/nvm.sh"
+    elif [ -s "$HOME/.oh-my-zsh/custom/plugins/zsh-nvm/zsh-nvm.plugin.zsh" ]; then
+      warn "zsh-nvm installed but nvm not loaded in this shell; skipping node install (open a new shell and re-run)."
+      return 0
+    else
+      warn "nvm not available; skipping node install."
+      return 0
+    fi
+  fi
+  run_step "Installing Node.js LTS" nvm install --lts --latest-npm
+  nvm use --lts || true
+}
+
+# brew_on_path — ensure just-installed brew is usable in this process.
+brew_on_path() {
+  have_cmd brew && return 0
+  for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew; do
+    if [ -x "$_brew" ]; then
+      eval "$("$_brew" shellenv)"
+      break
+    fi
+  done
+  unset _brew
+}
+
+# Install Homebrew (decomposed: deps -> install -> configure).
+install_homebrew_deps() {
+  _sudo="$(sudo_if_needed)"
+  case "$(pkg_manager)" in
+    apt)
+      run_step "Updating apt index" $_sudo apt-get update
+      # shellcheck disable=SC2086
+      run_step "Installing Homebrew build deps" $_sudo apt-get install -y $APT_DEPS_DEBIAN
+      ;;
+    dnf)
+      run_step "Installing Development Tools" $_sudo dnf groupinstall -y 'Development Tools'
+      # shellcheck disable=SC2086
+      run_step "Installing Homebrew deps" $_sudo dnf install -y $APT_DEPS_FEDORA
+      ;;
+    yum)
+      run_step "Installing Development Tools" $_sudo yum groupinstall -y 'Development Tools'
+      # shellcheck disable=SC2086
+      run_step "Installing Homebrew deps" $_sudo yum install -y $APT_DEPS_FEDORA
+      ;;
+  esac
+  unset _sudo
+}
+
+homebrew_shellenv_line() {
+  case "$DOTFILES_OS" in
+    darwin)
+      case "$DOTFILES_ARCH" in
+        arm64 | aarch64) printf 'eval "$(/opt/homebrew/bin/brew shellenv)"\n' ;;
+        *) printf 'eval "$(/usr/local/bin/brew shellenv)"\n' ;;
+      esac
+      ;;
+    *) printf 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"\n' ;;
+  esac
+}
+
+install_homebrew() {
+  # Uninstall only when a brew installation actually exists.
+  if have_cmd brew; then
+    if confirm "Homebrew already installed. Reinstall from scratch?" "n"; then
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)" || true
+    else
+      info "Keeping existing Homebrew installation."
+    fi
+  fi
+
+  case "$DOTFILES_OS" in
+    linux | wsl) install_homebrew_deps ;;
+  esac
+
+  if ! have_cmd brew; then
+    run_step "Installing Homebrew" /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  fi
+  brew_on_path
+  require_cmd brew
+  configure_tool "Homebrew" "$(homebrew_shellenv_line)"
+}
+
+# Install additional tools (single declarative manifest + one brew call).
 install_tools() {
-  local tools=()
+  brew_on_path
+  require_cmd brew
 
-  ## Bat (https://github.com/sharkdp/bat)
-  ## Displays the content of a file highlighted and formatted
-  tools+=(bat)
+  # Taps first (word-splitting on controlled constant is intentional).
+  # shellcheck disable=SC2086
+  for _tap in $BREW_TAPS; do
+    brew tap "$_tap" || warn "brew tap $_tap failed; continuing."
+  done
 
-  ## btop++ (https://github.com/aristocratos/btop)
-  ## Resource monitor
-  tools+=(btop)
+  # shellcheck disable=SC2086
+  run_step "Installing brew tools" brew install $BREW_TOOLS
 
-  ## Bun (https://github.com/oven-sh/bun)
-  ## JavaScript runtime
-  brew tap oven-sh/bun
-  tools+=(bun)
-
-  ## fastfetch (https://github.com/fastfetch-cli/fastfetch)
-  ## Displays system information
-  tools+=(fastfetch)
-
-  ## fd (https://github.com/sharkdp/fd)
-  ## Simple, fast, and user-friendly alternative to "find"
-  tools+=(fd)
-
-  ## fzf (https://github.com/junegunn/fzf)
-  ## Improves the functionality of <C-r> and <C-t>
-  tools+=(fzf)
-  configure_tool "fzf" "source <(fzf --zsh)"
-
-  ## lazydocker (https://github.com/jesseduffield/lazydocker)
-  # A lazier way to manage everything docker
-  tools+=(lazydocker)
-
-  ## lazygit (https://github.com/jesseduffield/lazygit)
-  ## Simple terminal UI for git commands
-  tools+=(lazygit)
-
-  ## lsd (https://github.com/lsd-rs/lsd)
-  ## Next-generation 'ls' command
-  tools+=(lsd)
-
-  ## ripgrep (https://github.com/BurntSushi/ripgrep)
-  ## Recursively searches directories for a regex pattern respecting gitignore
-  tools+=(ripgrep)
-
-  ## Starship (https://starship.rs)
-  ## Improves the terminal prompt (input interface)
-  tools+=(starship)
-  configure_tool "starship" 'eval "$(starship init zsh)"'
-
-  ## The Fuck (https://github.com/nvbn/thefuck)
-  ## Suggests corrections for the previous command
-  tools+=(thefuck)
-  configure_tool "The Fuck" 'eval "$(thefuck --alias)"'
-
-  ## tmux (https://github.com/tmux/tmux)
-  ## Terminal multiplexer
-  tools+=(tmux)
-  configure_tool "tmux" 'alias tm="tmux attach || tmux"'
-
-  ## Vim (https://github.com/vim/vim)
-  ## Text editor
-  tools+=(vim)
-
-  ## zoxide (https://github.com/ajeetdsouza/zoxide)
-  ## Smarter cd command, inspired by z and autojump
-  tools+=(zoxide)
-  configure_tool "zoxide" 'eval "$(zoxide init zsh)"'
-
-  brew install "${tools[@]}"
+  configure_tool "fzf" "$(zshrc_block fzf)"
+  configure_tool "starship" "$(zshrc_block starship)"
+  configure_tool "The Fuck" "$(zshrc_block thefuck)"
+  configure_tool "tmux" "$(zshrc_block tmux)"
+  configure_tool "zoxide" "$(zshrc_block zoxide)"
+  unset _tap
 }
 
-# Configure dotfiles and related tools
+# Symlink a config dir/file from the repo into $HOME (repo-anchored).
+link_config() {
+  _src_rel="$1"
+  _dst="$2"
+  safe_link "$DOTFILES_ROOT/$_src_rel" "$_dst"
+  unset _src_rel _dst
+}
+
+# Configure dotfiles and related tools.
 configure_dotfiles() {
-  [[ ! -d ~/.config ]] && mkdir ~/.config
+  ensure_dir "$HOME/.config"
 
-  ## Configure Alacritty
-  [[ -d ~/.config/alacritty ]] && rm -rf ~/.config/alacritty
-  ln -sf "$PWD/alacritty" ~/.config/alacritty
-  curl -LO --output-dir ~/.config/alacritty https://github.com/catppuccin/alacritty/raw/main/catppuccin-mocha.toml
-  [[ "$OS" != Darwin* ]] && sed -i 's/decorations = "Transparent"/decorations = "None"/' ~/.config/alacritty/alacritty.toml
+  link_config "alacritty" "$HOME/.config/alacritty"
+  # Fetch upstream theme only when missing (never overwrite user edits).
+  if [ ! -f "$HOME/.config/alacritty/catppuccin-mocha.toml" ]; then
+    curl -fLO --output-dir "$HOME/.config/alacritty" \
+      https://github.com/catppuccin/alacritty/raw/main/catppuccin-mocha.toml || \
+      warn "Could not download catppuccin theme; continuing."
+  fi
+  # Non-macOS terminals need opaque decorations; edit the *installed* copy,
+  # and only when the Transparent marker is present.
+  case "$DOTFILES_OS" in
+    darwin) : ;;
+    *)
+      if grep -q 'decorations = "Transparent"' "$HOME/.config/alacritty/alacritty.toml" 2>/dev/null; then
+        sed -i 's/decorations = "Transparent"/decorations = "None"/' "$HOME/.config/alacritty/alacritty.toml"
+      fi
+      ;;
+  esac
 
-  ## Configure btop++
-  [[ -d ~/.config/btop ]] && rm -rf ~/.config/btop
-  ln -sf "$PWD/btop" ~/.config/btop
+  link_config "btop" "$HOME/.config/btop"
 
-  ## Configure Starship
-  eval "$(starship init zsh)"
-  starship preset gruvbox-rainbow -o ~/.config/starship.toml
+  if have_cmd starship; then
+    starship preset gruvbox-rainbow -o "$HOME/.config/starship.toml" || \
+      warn "starship preset failed; continuing."
+  else
+    warn "starship not on PATH yet; skipping preset (open a new shell)."
+  fi
 
-  ## Configure tmux
-  [[ -d ~/.config/tmux ]] && rm -rf ~/.config/tmux
-  ln -sf "$PWD/tmux" ~/.config/tmux
-  git clone https://github.com/tmux-plugins/tpm ~/.config/tmux/plugins/tpm
+  link_config "tmux" "$HOME/.config/tmux"
+  clone_or_update "https://github.com/tmux-plugins/tpm" "$HOME/.config/tmux/plugins/tpm"
 
-  ## Configure Vim
-  [[ -d ~/.config/vim ]] && rm -rf ~/.config/vim
-  [[ -f ~/.vimrc ]] && rm -rf ~/.vimrc
-  mkdir -p ~/.config/vim
-  ln -sf "$PWD/vim/.vimrc" ~/.vimrc
-  ln -sf "$PWD/vim/plugins" ~/.config/vim/plugins
+  ensure_dir "$HOME/.config/vim"
+  safe_link "$DOTFILES_ROOT/vim/.vimrc" "$HOME/.vimrc"
+  safe_link "$DOTFILES_ROOT/vim/plugins" "$HOME/.config/vim/plugins"
 }
 
-# Main script execution
+# Main script execution.
 main() {
   detect_os
-  log "️Setting up ZSH" false
-  setup_zsh || {
-    log "Failed to set up ZSH." false
-    exit 1
-  }
-  log "️Installing node.js"
-  install_node || {
-    log "Failed to install Node.js." false
-    exit 1
-  }
-  log "️Installing Homebrew"
-  install_homebrew || {
-    log "Failed to install Homebrew." false
-    exit 1
-  }
-  log "️Installing tools"
-  install_tools || {
-    log "Failed to install tools." false
-    exit 1
-  }
-  log "️Configuring dotfiles"
-  configure_dotfiles || {
-    log "Failed to configure dotfiles." false
-    exit 1
-  }
-  log "️Activating ZSH Shell"
-  activate_zsh || {
-    log "Failed to activate ZSH as the default shell." false
-    exit 1
-  }
-  log "️System setup completed!"
+  run_step "Setting up ZSH" setup_zsh
+  run_step "Installing Node.js" install_node
+  run_step "Installing Homebrew" install_homebrew
+  run_step "Installing tools" install_tools
+  run_step "Configuring dotfiles" configure_dotfiles
+  run_step "Activating ZSH shell" activate_zsh
+  log "System setup completed!"
 }
 
-main
+main "$@"

@@ -1,247 +1,166 @@
-# Shell
-# Interface to interact with the operating system
+# shell.ps1 — provision a Windows shell (tools, prompt, vim).
+#
+# Refactor notes:
+#   - Configuration as data: $WingetTools manifest + $ProfileBlocks table
+#     replace 13 copy-pasted `if (-Not (Get-Command ...)) { winget ... }`
+#     blocks and 6 raw `>> $PROFILE` appends.
+#   - Idempotency: $PROFILE is backed up (never deleted) and edited via
+#     Add-ProfileBlock markers; starship.toml is backed up before overwrite;
+#     vim plugin dir is resolved under $HOME (not .\ relative to CWD).
+#   - Bug fixes: no hardcoded `vim91` path (resolved dynamically), repo files
+#     resolved from $PSScriptRoot (not CWD), `Read-YesNo` accepts Y/yes,
+#     winget calls are non-interactive, `return` used instead of `exit`
+#     inside functions.
 
-$installShell = Read-Host "1. Do you want to configure your shell? y/n"
+#Requires -Version 5.1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-if ($installShell -eq "y") {
-  # Pre-configuration
-  if (Test-Path $PROFILE) {
-    Remove-Item $PROFILE
+. "$PSScriptRoot/lib/Common.ps1"
+
+$RepoRoot = Join-Path $PSScriptRoot '../..' | Resolve-Path | Select-Object -ExpandProperty Path
+
+# Declarative tool manifest: Test = command probe, Id = winget id.
+$WingetTools = @(
+  @{ Test = 'bat';       Id = 'sharkdp.bat';            Comment = 'bat' }
+  @{ Test = 'btm';       Id = 'Clement.bottom';         Comment = 'bottom (resource monitor)' }
+  @{ Test = 'bun';       Id = 'Oven-sh.Bun';            Comment = 'bun (JavaScript runtime)' }
+  @{ Test = 'fd';        Id = 'sharkdp.fd';             Comment = 'fd (find alternative)' }
+  @{ Test = 'fzf';       Id = 'junegunn.fzf';           Comment = 'fzf' }
+  @{ Test = 'git';       Id = 'Git.Git';                Comment = 'Git' }
+  @{ Test = 'lsd';       Id = 'lsd-rs.lsd';             Comment = 'lsd (ls alternative)' }
+  @{ Test = 'fastfetch'; Id = 'fastfetch';              Comment = 'fastfetch (system info)' }
+  @{ Test = 'node';      Id = 'OpenJS.NodeJS.LTS';      Comment = 'Node.js LTS' }
+  @{ Test = 'rg';        Id = 'BurntSushi.ripgrep.MSVC'; Comment = 'ripgrep' }
+  @{ Test = 'sd';        Id = 'chmln.sd';               Comment = 'sd (sed alternative)' }
+  @{ Test = 'starship';  Id = 'Starship.Starship';      Comment = 'Starship (prompt)' }
+  @{ Test = 'vim';       Id = 'vim.vim';                Comment = 'Vim' }
+  @{ Test = 'zoxide';    Id = 'ajeetdsouza.zoxide';     Comment = 'zoxide (smarter cd)' }
+)
+
+function Get-VimExe {
+  $cmd = Get-Command vim -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+    if (-not $base) { continue }
+    $hit = Get-ChildItem -Path (Join-Path $base 'Vim') -Filter 'vim.exe' -Recurse -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($hit) { return $hit.FullName }
   }
+  return 'vim'
+}
 
-  # PSReadLine (https://github.com/PowerShell/PSReadLine)
-  # Readline implementation inspired by bash for PowerShell
+function Install-ShellSection {
+  # Backup instead of deleting the whole profile.
+  Backup-File $PROFILE | Out-Null
 
-  ## Pre-requisites
-  Install-Module -Name PowerShellGet
+  Ensure-Scoop
+  Ensure-PSModule -Name 'PowerShellGet'
+  Ensure-PSModule -Name 'PSReadLine'
+  Ensure-PSModule -Name 'PSFzf'
 
-  ## Installation
-  Install-Module PSReadLine
-
-  ## Configuration
-  Write-Output "# PSReadLine
-# Set-PSReadlineOption -PredictionViewStyle ListView
+  Add-ProfileBlock -Id 'psreadline' -Content @'
+# PSReadLine
 Set-PSReadlineOption -PredictionViewStyle InlineView
 Set-PSReadLineKeyHandler -Key UpArrow -Function HistorySearchBackward
 Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
-Set-PSReadlineKeyHandler -Key Tab -Function MenuComplete`n" >>$PROFILE
+Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
+'@
 
-  # Scoop
-  # Command-line installer for Windows
-
-  ## Installation
-  if (-Not (Get-Command scoop -ErrorAction SilentlyContinue)) {
-    Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-    Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+  foreach ($tool in $WingetTools) {
+    Ensure-WingetTool -Test $tool.Test -Id $tool.Id -Comment $tool.Comment
   }
 
-  # bat (https://github.com/sharkdp/bat)
-  # Displays the content of a file highlighted and formatted
+  Add-ProfileBlock -Id 'fzf' -Content @'
+# fzf
+Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+t' -PSReadlineChordReverseHistory 'Ctrl+r'
+'@
 
-  ## Installation
-  if (-Not (Get-Command bat -ErrorAction SilentlyContinue)) {
-    winget install --id sharkdp.bat
-  }
-
-  # bottom
-  # Resource monitor
-
-  ## Installation
-  if (-Not (Get-Command btm -ErrorAction SilentlyContinue)) {
-    winget install --id Clement.bottom
-  }
-
-  # bun (https://github.com/oven-sh/bun)
-  # JavaScript runtime
-
-  ## Installation
-  scoop install bun
-
-  # fd (https://github.com/sharkdp/fd)
-  # Simple, fast, and user-friendly alternative to "find"
-
-  ## Installation
-  if (-Not (Get-Command fd -ErrorAction SilentlyContinue)) {
-    winget install --id sharkdp.fd
-  }
-
-  # fzf (https://github.com/junegunn/fzf)
-  # Improves the functionality of <C-r> and <C-t>
-
-  ## Installation
-  if (-Not (Get-Command fzf -ErrorAction SilentlyContinue)) {
-    winget install --id junegunn.fzf
-  }
-  Install-Module -Name PSFzf
-
-  ## Configuration
-  Write-Output "# fzf
-Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+t' -PSReadlineChordReverseHistory 'Ctrl+r'`n" >>$PROFILE
-
-  # Git
-  # Version control system
-
-  ## Installation
-  if (-Not (Get-Command git -ErrorAction SilentlyContinue)) {
-    winget install --id Git.Git
-  }
-
-  # lsd (https://github.com/lsd-rs/lsd)
-  # Next-generation 'ls' command
-
-  ## Installation
-  if (-Not (Get-Command lsd -ErrorAction SilentlyContinue)) {
-    winget install --id lsd-rs.lsd
-  }
-
-  ## Configuration
-  Write-Output "# lsd
+  Add-ProfileBlock -Id 'lsd' -Content @'
+# lsd
 if (-Not (Test-Path alias:l)) {
-  function L_ALIAS { lsd --blocks permission,size,date,name -la `$args }
+  function L_ALIAS { lsd --blocks permission,size,date,name -la $args }
   New-Alias l L_ALIAS
-}`n" >>$PROFILE
+}
+'@
 
-  # fastfetch
-  # Displays system information
+  Add-ProfileBlock -Id 'starship' -Content @'
+# Starship
+Invoke-Expression (&starship init powershell)
+'@
 
-  ## Instalación
-  if (-Not (Get-Command fastfetch -ErrorAction SilentlyContinue)) {
-    winget install fastfetch
-  }
-
-  # Node.js
-  # JavaScript runtime
-
-  ## Installation
-  if (-Not (Get-Command node -ErrorAction SilentlyContinue)) {
-    winget install --id OpenJS.NodeJS.LTS
-  }
-
-  # ripgrep (https://github.com/BurntSushi/ripgrep)
-  # Recursively searches directories for a regex pattern respecting gitignore
-
-  ## Installation
-  if (-Not (Get-Command rg -ErrorAction SilentlyContinue)) {
-    winget install --id BurntSushi.ripgrep.MSVC
-  }
-
-  # sd (https://github.com/chmln/sd)
-  # Intuitive CLI for search and replace (alternative to 'sed')
-
-  ## Installation
-  if (-Not (Get-Command sd -ErrorAction SilentlyContinue)) {
-    winget install --id chmln.sd
-  }
-
-  # Starship
-  # Improves the terminal prompt (input interface)
-
-  ## Installation
-  if (-Not (Get-Command starship -ErrorAction SilentlyContinue)) {
-    winget install --id Starship.Starship
-  }
-
-  ## Configuration
-  Write-Output "# Startship
-Invoke-Expression (&starship init powershell)`n" >>$PROFILE
-
-  # Vim
-  # Text editor
-
-  ## Installation
-  if (-Not (Get-Command vim -ErrorAction SilentlyContinue)) {
-    winget install --id vim.vim
-  }
-
-  ## Configuration
-  Write-Output "# Vim
+  $vimExe = Get-VimExe
+  $vimTutor = Join-Path (Split-Path $vimExe -Parent) 'vimtutor.bat'
+  Add-ProfileBlock -Id 'vim' -Content @"
+# Vim
 if (-Not (Test-Path alias:vim)) {
-  function VIM_ALIAS { & 'C:\Program Files\Vim\vim91\vim.exe' `$args }
+  function VIM_ALIAS { & '$vimExe' `$args }
   New-Alias vim VIM_ALIAS
 }
-if (-Not (Test-Path alias:vimtutor)) {
-  function VIMTUTOR_ALIAS { & 'C:\Program Files\Vim\vim91\vimtutor.bat' `$args }
+if ((-Not (Test-Path alias:vimtutor)) -and (Test-Path '$vimTutor')) {
+  function VIMTUTOR_ALIAS { & '$vimTutor' `$args }
   New-Alias vimtutor VIMTUTOR_ALIAS
-}`n" >>$PROFILE
+}
+"@
 
-  # zoxide
-  # Smarter cd command, inspired by z and autojump
+  Add-ProfileBlock -Id 'zoxide' -Content @'
+# zoxide
+Invoke-Expression (& { (zoxide init powershell | Out-String) })
+'@
 
-  ## Installation
-  if (-Not (Get-Command zoxide -ErrorAction SilentlyContinue)) {
-    winget install --id ajeetdsouza.zoxide
-  }
-
-  ## Configuration
-  Write-Output "# zoxide
-Invoke-Expression (& { (zoxide init powershell | Out-String) })`n" >>$PROFILE
-
-  # Open a new tab in Windows Terminal
-  $openWindowsTab = Read-Host "> Do you want to open a new tab in Windows Terminal to view the changes? y/n"
-
-  if ($openWindowsTab -eq "y") {
+  if (Read-YesNo -Prompt 'Do you want to open a new tab in Windows Terminal to view the changes? (y/n)' -Default 'n') {
     wt --window 0 new-tab
-    exit
+    return
   }
 }
 
-$setupStarshipPreset = Read-Host "2. Do you want to configure the 'gruvbox-rainbow' preset of Starship? y/n"
+function Install-StarshipPresetSection {
+  if (-not (Assert-Commands @('starship', 'sd'))) { return }
 
-if (
-  $setupStarshipPreset -eq "y"
-) {
-  $requirements = 'starship', 'sd'
+  $configDir = Join-Path $HOME '.config'
+  Ensure-Directory $configDir
+  $starshipToml = Join-Path $configDir 'starship.toml'
+  Backup-File $starshipToml | Out-Null
 
-  foreach ($requirement in $requirements) {
-    if (-Not (Get-Command $requirement -ErrorAction SilentlyContinue)) {
-      Write-Output "ERROR: Command $requirement not found"
-      exit
-    }
+  starship preset gruvbox-rainbow -o $starshipToml
+
+  # Upstream preset glyphs require a Nerd Font; these edits are key-based
+  # (not glyph-based) so they survive preset updates.
+  if (Read-YesNo -Prompt 'Do you want to disable the OS icon? (y/n)' -Default 'n') {
+    sd '(?s)\[os\][^\[]*?disabled = false' "[os]`ndisabled = true" $starshipToml
   }
 
-  if (-Not (Test-Path $HOME\.config)) {
-    New-Item -ItemType Directory $HOME\.config 
-  }
-
-  starship preset gruvbox-rainbow -o $HOME\.config\starship.toml 
-
-  $removeSystemIcon = Read-Host "> Do you want to disable the system icon? y/n"
-
-  if ($removeSystemIcon -eq "y") {
-    sd '\[os\].*\ndisabled\ = false' '[os]\ndisabled = true' $HOME\.config\starship.toml
-  }
-  else {
-    sd 'Windows = "󰍲"' 'Windows = ""' $HOME\.config\starship.toml
-  }
-
-  sd '"Documents" = "󰈙 "' '# "Documents" = "󰈙 "' $HOME\.config\starship.toml
-  sd '"Music" = "󰝚 "' '"Music" = " "' $HOME\.config\starship.toml
-  sd '"Developer" = "󰲋 "' '# "Developer" = "󰲋 "' $HOME\.config\starship.toml
+  sd '^"Documents" = ' '# "Documents" = ' $starshipToml
+  sd '^"Developer" = ' '# "Developer" = ' $starshipToml
 }
 
-$setupVimrc = Read-Host "3. Do you want to activate a basic configuration for Vim? y/n"
+function Install-VimSection {
+  if (-not (Assert-Commands @('git'))) { return }
 
-if ($setupVimrc -eq "y") {
-  $requirements = 'git'
+  $plugPath = Join-Path $HOME 'vimfiles/autoload/plug.vim'
+  Ensure-Directory (Split-Path $plugPath -Parent)
+  Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim -OutFile $plugPath
 
-  foreach ($requirement in $requirements) {
-    if (-Not (Get-Command $requirement -ErrorAction SilentlyContinue)) {
-      Write-Output "ERROR: Command $requirement not found"
-      exit
-    }
-  }
+  $repoVimrc = Join-Path $RepoRoot 'vim/.vimrc'
+  $homeVimrc = Join-Path $HOME '_vimrc'
+  Backup-File $homeVimrc | Out-Null
+  Copy-Item -Force $repoVimrc $homeVimrc
 
-  Invoke-WebRequest -useb https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim |`
-    New-Item $HOME/vimfiles/autoload/plug.vim -Force
-
-  Copy-Item vim/.vimrc ~/_vimrc
-
-  Write-Output (Get-Content ~/_vimrc | Where-Object {
-    -not ($_.ReadCount -ge 3 -and $_.ReadCount -le 9)
-  }) >~/_vimrc
-
-  if (-Not (Test-Path ~\.config\vim\plugins)) {
-    New-Item -ItemType Directory -Path .\.config\vim\plugins -Force
-  }
-  Copy-Item vim/plugins/* ~/.config/vim/plugins
+  $pluginDir = Join-Path $HOME '.config/vim/plugins'
+  Ensure-Directory $pluginDir
+  Copy-Item -Force (Join-Path $RepoRoot 'vim/plugins/*') $pluginDir
 }
+
+function Main {
+  if (Read-YesNo -Prompt '1. Do you want to configure your shell? (y/n)' -Default 'n') {
+    Install-ShellSection
+  }
+  if (Read-YesNo -Prompt "2. Do you want to configure the 'gruvbox-rainbow' preset of Starship? (y/n)" -Default 'n') {
+    Install-StarshipPresetSection
+  }
+  if (Read-YesNo -Prompt '3. Do you want to activate a basic configuration for Vim? (y/n)' -Default 'n') {
+    Install-VimSection
+  }
+}
+
+Main
