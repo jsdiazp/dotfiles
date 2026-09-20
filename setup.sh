@@ -12,6 +12,11 @@
 #
 # Portable: bash >= 3.2 and zsh. macOS `readlink -f` is NOT used.
 
+# Usage: setup.sh [--unix docker|shell|swap|update|N] [--server ubuntu|N]
+#                [--list] [-h|--help]
+# Without flags, the interactive menu is shown. display_menu return codes:
+# 0 = selected, 1 = back, 3 = EOF (input gone) — 3 unwinds to a farewell.
+
 set -euo pipefail
 
 # Portable script dir (no GNU `readlink -f`, which is missing on macOS).
@@ -42,6 +47,46 @@ server_script_for() {
   esac
 }
 
+# Resolve a CLI task argument (number or case-insensitive name) to a
+# 1-based menu number. Prints the number; returns 1 when unknown.
+unix_task_number() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1 | docker) printf '1\n' ;;
+    2 | shell) printf '2\n' ;;
+    3 | swap) printf '3\n' ;;
+    4 | update) printf '4\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+server_task_number() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1 | ubuntu) printf '1\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+print_usage() {
+  cat <<EOF
+Usage: $(basename "$0") [options]
+
+Options:
+  --unix <task>    Run a UNIX task directly: docker, shell, swap, update (or 1-4)
+  --server <task>  Run a server task directly: ubuntu (or 1)
+  --list           List available tasks and exit
+  -h, --help       Show this help and exit
+
+Without options, the interactive menu is shown.
+EOF
+}
+
+print_tasks() {
+  printf 'UNIX tasks:\n'
+  printf '  1) docker\n  2) shell\n  3) swap\n  4) update\n'
+  printf 'Server tasks:\n'
+  printf '  1) ubuntu\n'
+}
+
 # Execute the chosen script if it exists.
 execute_script() {
   _script="$1"
@@ -70,37 +115,96 @@ task_interpreter() {
 }
 
 unix_menu() {
-  if display_menu "What do you want to do in your UNIX-based OS?" \
-    "Setup Docker" "Setup shell" "Setup swap" "Update OS"; then
-    _script="$(unix_script_for "$MENU_CHOICE")"
-    execute_script "$_script" "$(task_interpreter)" || true
-  fi
-  # Back (return 1) or invalid input simply returns to main menu.
-  return 0
+  MENU_PATH="Main > UNIX-based OS"
+  _rc=0
+  display_menu "What do you want to do in your UNIX-based OS?" \
+    "Setup Docker" "Setup shell" "Setup swap" "Update OS" || _rc=$?
+  MENU_PATH=""
+  case "$_rc" in
+    0)
+      _script="$(unix_script_for "$MENU_CHOICE")"
+      execute_script "$_script" "$(task_interpreter)" || true
+      return 0
+      ;;
+    3) return 3 ;; # EOF — unwind, do not loop.
+    *) return 0 ;; # Back — return to main menu.
+  esac
 }
 
 server_menu() {
-  if display_menu "What server OS do you want to set up?" "Ubuntu"; then
-    _script="$(server_script_for "$MENU_CHOICE")"
-    execute_script "$_script" "$(task_interpreter)" || true
-  fi
-  return 0
+  MENU_PATH="Main > Server"
+  _rc=0
+  display_menu "What server OS do you want to set up?" "Ubuntu" || _rc=$?
+  MENU_PATH=""
+  case "$_rc" in
+    0)
+      _script="$(server_script_for "$MENU_CHOICE")"
+      execute_script "$_script" "$(task_interpreter)" || true
+      return 0
+      ;;
+    3) return 3 ;; # EOF — unwind, do not loop.
+    *) return 0 ;; # Back — return to main menu.
+  esac
 }
 
 main_menu() {
-  if display_menu "What do you want to do?" \
-    "Setup UNIX-based OS" "Setup server"; then
-    case "$MENU_CHOICE" in
-      1) unix_menu ;;
-      2) server_menu ;;
-    esac
+  _rc=0
+  display_menu "What do you want to do?" \
+    "Setup UNIX-based OS" "Setup server" || _rc=$?
+  case "$_rc" in
+    0)
+      case "$MENU_CHOICE" in
+        1) unix_menu ;;
+        2) server_menu ;;
+      esac
+      ;;
+    3) return 3 ;; # EOF — unwind to main.
+    *) return 0 ;; # Back at top level — just re-render.
+  esac
+}
+
+# Dispatch CLI flags. Returns 0 when the caller should continue to the
+# interactive menu, otherwise exits the script directly.
+dispatch_cli() {
+  if [ "$#" -eq 0 ]; then
+    return 0
   fi
-  return 0
+  case "$1" in
+    -h | --help)
+      print_usage
+      exit 0
+      ;;
+    --list)
+      print_tasks
+      exit 0
+      ;;
+    --unix)
+      [ "$#" -ge 2 ] || die "Missing value for --unix. See --help."
+      _num="$(unix_task_number "$2")" || die "Unknown UNIX task: $2. See --list."
+      execute_script "$(unix_script_for "$_num")" "$(task_interpreter)"
+      exit "$?"
+      ;;
+    --server)
+      [ "$#" -ge 2 ] || die "Missing value for --server. See --help."
+      _num="$(server_task_number "$2")" || die "Unknown server task: $2. See --list."
+      execute_script "$(server_script_for "$_num")" "$(task_interpreter)"
+      exit "$?"
+      ;;
+    *)
+      die "Unknown option: $1. See --help."
+      ;;
+  esac
 }
 
 main() {
+  dispatch_cli "$@"
   while true; do
-    main_menu
+    _rc=0
+    main_menu || _rc=$?
+    if [ "$_rc" -eq 3 ]; then
+      printf '%b\n' "${BLUE}Happy coding!${RESET}"
+      exit 0
+    fi
   done
 }
 

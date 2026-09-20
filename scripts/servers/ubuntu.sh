@@ -352,6 +352,7 @@ main() {
     run_step "Provisioning shell for $_u" setup_shell_by_user "$_u"
   done
   unset _u
+  print_summary "Ubuntu provisioning summary"
 }
 
 main "$@"

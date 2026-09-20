@@ -89,10 +89,13 @@ install_docker_fedora() {
 
 # Main function — declarative target table + strategy dispatch.
 main() {
+  MENU_PATH="Setup > Docker"
   if ! display_menu "Select a platform" "Debian" "Fedora" "Ubuntu"; then
-    info "Back to previous menu."
+    # Back (1) or EOF (3): unwind without running anything.
+    [ "$MENU_CHOICE" = "b" ] && info "Back to previous menu."
     return 0
   fi
+  MENU_PATH=""
 
   case "$MENU_CHOICE" in
     1) install_docker_debian_ubuntu "debian" ;;
@@ -100,6 +103,8 @@ main() {
     3) install_docker_debian_ubuntu "ubuntu" ;;
     *) die "Unsupported platform: $MENU_CHOICE" ;;
   esac
+
+  print_summary "Docker summary"
 }
 
 main "$@"

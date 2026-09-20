@@ -120,6 +120,7 @@ main() {
   run_step "Creating a Swap File" create_swap_file
   run_step "Enabling the Swap File" enable_swap_file
   run_step "Making the Swap File Permanent" make_swap_permanent
+  print_summary "Swap summary"
 }
 
 main "$@"

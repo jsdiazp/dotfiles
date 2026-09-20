@@ -330,6 +330,7 @@ main() {
   run_step "Installing tools" install_tools
   run_step "Configuring dotfiles" configure_dotfiles
   run_step "Activating ZSH shell" activate_zsh
+  print_summary "Setup summary"
   log "System setup completed!"
 }
 

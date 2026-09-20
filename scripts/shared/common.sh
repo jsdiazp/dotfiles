@@ -4,8 +4,11 @@
 # High-level patterns applied:
 #   - Single source of truth (colors, logging, OS detection, idempotency)
 #     instead of copy-pasted `log()` in every script.
+#   - Leveled logging (debug/info/warn/error) with NO_COLOR, ASCII, and
+#     log-level controls for scripts and CI alike.
 #   - Fail-fast helpers (`die`, `run_step`, `require_cmd`) as a
-#     Template-Method pipeline: `run_step "label" func args...`.
+#     Template-Method pipeline: `run_step "label" func args...`, with
+#     per-step timing and an end-of-run summary table.
 #   - Idempotency primitives (`append_once`, `safe_link`, `backup_once`,
 #     `clone_or_update`) so re-runs never duplicate config or destroy data.
 #   - Adapter pattern for OS / package managers (`os_family`, `pkg_manager`).
@@ -53,6 +56,19 @@ BLUE="$DOTFILES_BLUE"
 BOLD="$DOTFILES_BOLD"
 RESET="$DOTFILES_RESET"
 
+# Status symbols (UTF-8 by default; DOTFILES_ASCII=1 for plain text).
+if [ -n "${DOTFILES_ASCII:-}" ]; then
+  SYM_OK='[ok]'
+  SYM_FAIL='[FAIL]'
+  SYM_SKIP='[skip]'
+  SYM_STEP='>'
+else
+  SYM_OK='✔'
+  SYM_FAIL='✘'
+  SYM_SKIP='○'
+  SYM_STEP='▸'
+fi
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -79,6 +95,16 @@ info() {
   printf '%b\n' "${DOTFILES_GREEN}$*${DOTFILES_RESET}"
 }
 
+# debug <message...> — printed only when DOTFILES_LOG_LEVEL=debug.
+# Levels: debug < info < warn < error. info/warn/error always print.
+DOTFILES_LOG_LEVEL="${DOTFILES_LOG_LEVEL:-info}"
+
+debug() {
+  case "${DOTFILES_LOG_LEVEL:-info}" in
+    debug) printf '%b\n' "${DOTFILES_BLUE}DEBUG: $*${DOTFILES_RESET}" >&2 ;;
+  esac
+}
+
 warn() {
   printf '%b\n' "${DOTFILES_YELLOW}WARN: $*${DOTFILES_RESET}" >&2
 }
@@ -96,18 +122,157 @@ die() {
 }
 
 # run_step <label> <command> [args...] — Template-Method pipeline step.
-# Logs start, runs command, dies with context on failure. Replaces the
+# Logs start, times the run, records OK/FAIL into the summary table, and
+# dies with context on failure. Replaces the
 # repeated `foo || { log "Failed..."; exit 1; }` blocks.
 run_step() {
   _step_label="$1"
   shift
-  log "$_step_label" false false
+  printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_step_label}...${DOTFILES_RESET}"
+  _step_t0=$(_now_s)
   if "$@"; then
+    _step_dt=$(($(_now_s) - _step_t0))
+    summary_record "$_step_label" OK "$(_fmt_dur "$_step_dt")"
+    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_step_label} ($(_fmt_dur "$_step_dt"))${DOTFILES_RESET}"
+    unset _step_label _step_t0 _step_dt
     return 0
   else
     _step_code=$?
+    _step_dt=$(($(_now_s) - _step_t0))
+    summary_record "$_step_label" FAIL "$(_fmt_dur "$_step_dt")"
     die "Step failed [${_step_code}]: ${_step_label}" "$_step_code"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Run summary tables
+# ---------------------------------------------------------------------------
+# Rows accumulate in DOTFILES_SUMMARY as `label|STATUS|detail` lines, so
+# reporting stays portable (no arrays: bash is 0-based, zsh is 1-based).
+: "${DOTFILES_SUMMARY:=}"
+
+# _now_s — portable epoch seconds (macOS + GNU date both support %s).
+_now_s() {
+  date +%s
+}
+
+# _fmt_dur <seconds> — "45s", "75s" -> "1m15s".
+_fmt_dur() {
+  _fd_s="$1"
+  if [ "$_fd_s" -ge 60 ]; then
+    printf '%dm%ds' "$((_fd_s / 60))" "$((_fd_s % 60))"
+  else
+    printf '%ds' "$_fd_s"
+  fi
+  unset _fd_s
+}
+
+# summary_record <label> <OK|FAIL|SKIP> [detail=-] — append one result row.
+summary_record() {
+  _r_label="$(printf '%s' "${1:-?}" | tr '|' '/')"
+  _r_status="$2"
+  _r_detail="${3:--}"
+  case "$_r_status" in
+    OK | FAIL | SKIP) : ;;
+    *) _r_status="FAIL" ;;
+  esac
+  DOTFILES_SUMMARY="${DOTFILES_SUMMARY}${_r_label}|${_r_status}|${_r_detail}
+"
+  unset _r_label _r_status _r_detail
+}
+
+# summary_reset — clear recorded rows (e.g. between menu-driven runs).
+summary_reset() {
+  DOTFILES_SUMMARY=""
+}
+
+# _pad_to_width <string> <width> — print string + trailing spaces.
+# Uses ${#} (character-based in bash and zsh), so UTF-8 symbols align.
+_pad_to_width() {
+  printf '%s' "$1"
+  _pad_n=$(($2 - ${#1}))
+  while [ "$_pad_n" -gt 0 ]; do
+    printf ' '
+    _pad_n=$((_pad_n - 1))
+  done
+  unset _pad_n
+}
+
+# _status_cell <OK|FAIL|SKIP> — colored, width-padded status (needs $_ws).
+_status_cell() {
+  case "$1" in
+    OK) _sc="$DOTFILES_GREEN"; _sp="${SYM_OK} OK" ;;
+    FAIL) _sc="$DOTFILES_RED"; _sp="${SYM_FAIL} FAIL" ;;
+    *) _sc="$DOTFILES_YELLOW"; _sp="${SYM_SKIP} SKIP" ;;
+  esac
+  printf '%b' "$_sc"
+  _pad_to_width "$_sp" "$_ws"
+  printf '%b' "$DOTFILES_RESET"
+  unset _sc _sp
+}
+
+# print_summary [title=Summary] — aligned results table with counts.
+# Sets SUMMARY_OK / SUMMARY_FAILED / SUMMARY_SKIPPED globals so callers can
+# branch on results (single source of truth: no parallel counters to drift).
+# Statuses are colorized; padding is character-based (${#} in bash/zsh),
+# so UTF-8 symbols stay aligned without awk.
+print_summary() {
+  _sum_title="${1:-Summary}"
+  if [ -z "${DOTFILES_SUMMARY:-}" ]; then
+    info "No steps recorded."
+    unset _sum_title
+    return 0
+  fi
+  _wn=4
+  _ws=$((4 + ${#SYM_OK}))
+  _t=$((5 + ${#SYM_FAIL}))
+  [ "$_t" -gt "$_ws" ] && _ws="$_t"
+  _t=$((5 + ${#SYM_SKIP}))
+  [ "$_t" -gt "$_ws" ] && _ws="$_t"
+  _wt=4
+  _c_ok=0
+  _c_fail=0
+  _c_skip=0
+  while IFS='|' read -r _wr_n _wr_s _wr_t; do
+    [ -n "$_wr_n" ] || continue
+    [ "${#_wr_n}" -gt "$_wn" ] && _wn="${#_wr_n}"
+    [ "${#_wr_t}" -gt "$_wt" ] && _wt="${#_wr_t}"
+  done <<<"$DOTFILES_SUMMARY"
+
+  printf '\n%b\n' "${BOLD}${GREEN}${_sum_title}${RESET}"
+  printf '  '
+  _pad_to_width "STEP" "$_wn"
+  printf '  '
+  _pad_to_width "STATUS" "$_ws"
+  printf '  %s\n' "TIME"
+  _sep_len=$((2 + _wn + 2 + _ws + 2 + _wt))
+  _sep=""
+  _i=0
+  while [ "$_i" -lt "$_sep_len" ]; do
+    _sep="${_sep}-"
+    _i=$((_i + 1))
+  done
+  printf '%s\n' "$_sep"
+  while IFS='|' read -r _wr_n _wr_s _wr_t; do
+    [ -n "$_wr_n" ] || continue
+    case "$_wr_s" in
+      OK) _c_ok=$((_c_ok + 1)) ;;
+      FAIL) _c_fail=$((_c_fail + 1)) ;;
+      *) _c_skip=$((_c_skip + 1)); _wr_s="SKIP" ;;
+    esac
+    printf '  '
+    _pad_to_width "$_wr_n" "$_wn"
+    printf '  '
+    _status_cell "$_wr_s"
+    printf '  %s\n' "${_wr_t:--}"
+  done <<<"$DOTFILES_SUMMARY"
+  printf '%s\n' "$_sep"
+  printf '  %d ok, %d failed, %d skipped\n' "$_c_ok" "$_c_fail" "$_c_skip"
+  SUMMARY_OK="$_c_ok"
+  SUMMARY_FAILED="$_c_fail"
+  SUMMARY_SKIPPED="$_c_skip"
+  unset _sum_title _wn _ws _wt _t _wr_n _wr_s _wr_t
+  unset _c_ok _c_fail _c_skip _sep_len _sep _i
 }
 
 # ---------------------------------------------------------------------------
