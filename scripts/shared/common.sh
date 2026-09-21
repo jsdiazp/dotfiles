@@ -4,11 +4,13 @@
 # High-level patterns applied:
 #   - Single source of truth (colors, logging, OS detection, idempotency)
 #     instead of copy-pasted `log()` in every script.
-#   - Leveled logging (debug/info/warn/error) with NO_COLOR, ASCII, and
-#     log-level controls for scripts and CI alike.
+#   - Leveled logging (debug/info/warn/error, default warn) with NO_COLOR,
+#     ASCII, and log-level controls for scripts and CI alike.
 #   - Fail-fast helpers (`die`, `run_step`, `require_cmd`) as a
 #     Template-Method pipeline: `run_step "label" func args...`, with
-#     per-step timing and an end-of-run summary table.
+#     per-step timing, an animated spinner over captured output by default
+#     (streaming at debug/info), and an end-of-run summary table.
+#     `run_step_live` covers steps that prompt (capture would hide them).
 #   - Idempotency primitives (`append_once`, `safe_link`, `backup_once`,
 #     `clone_or_update`) so re-runs never duplicate config or destroy data.
 #   - Adapter pattern for OS / package managers (`os_family`, `pkg_manager`).
@@ -91,16 +93,20 @@ log() {
   unset _msg _before _after _line
 }
 
+# Log levels: debug < info < warn < error (DOTFILES_LOG_LEVEL, default warn).
+#   debug/info print only at those levels; log() progress lines plus
+#   warn/error always print, so default runs stay informative but quiet.
+DOTFILES_LOG_LEVEL="${DOTFILES_LOG_LEVEL:-warn}"
+
 info() {
-  printf '%b\n' "${DOTFILES_GREEN}$*${DOTFILES_RESET}"
+  case "${DOTFILES_LOG_LEVEL:-warn}" in
+    debug | info) printf '%b\n' "${DOTFILES_GREEN}$*${DOTFILES_RESET}" ;;
+  esac
 }
 
 # debug <message...> — printed only when DOTFILES_LOG_LEVEL=debug.
-# Levels: debug < info < warn < error. info/warn/error always print.
-DOTFILES_LOG_LEVEL="${DOTFILES_LOG_LEVEL:-info}"
-
 debug() {
-  case "${DOTFILES_LOG_LEVEL:-info}" in
+  case "${DOTFILES_LOG_LEVEL:-warn}" in
     debug) printf '%b\n' "${DOTFILES_BLUE}DEBUG: $*${DOTFILES_RESET}" >&2 ;;
   esac
 }
@@ -121,26 +127,134 @@ die() {
   exit "$_die_code"
 }
 
+# _log_quiet — true when steps should capture output (warn/error levels).
+_log_quiet() {
+  case "${DOTFILES_LOG_LEVEL:-warn}" in
+    debug | info) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# _spin_enabled — animated spinner needs a TTY and no opt-out.
+# Honors DOTFILES_NO_SPINNER=1 (and DOTFILES_ASCII=1 for |/-\ frames).
+_spin_enabled() {
+  [ -z "${DOTFILES_NO_SPINNER:-}" ] || return 1
+  [ -t 1 ] || return 1
+  return 0
+}
+
+# _spinner_start <label> — background animation on the current line.
+# Frames iterate as separate words (no substring ops: multibyte-safe).
+# Shares the caller's process group, so Ctrl-C takes it down with the step;
+# every caller must still _spinner_stop before printing the outcome.
+_spinner_start() {
+  _spinner_label="$1"
+  (
+    if [ -n "${DOTFILES_ASCII:-}" ]; then
+      set -- '|' '/' '-' '\'
+    else
+      set -- '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏'
+    fi
+    while true; do
+      for _c in "$@"; do
+        printf '\r%b %s... ' "${DOTFILES_BLUE}${_c}${DOTFILES_RESET}" "$_spinner_label"
+        sleep 0.15
+      done
+    done
+  ) &
+  _spinner_pid=$!
+  unset _spinner_label
+}
+
+# _spinner_stop — kill the animation and clear its line (TTY-only caller).
+_spinner_stop() {
+  if [ -z "${_spinner_pid:-}" ]; then
+    return 0
+  fi
+  kill "$_spinner_pid" 2>/dev/null || true
+  wait "$_spinner_pid" 2>/dev/null || true
+  printf '\r\033[K'
+  _spinner_pid=""
+}
+
 # run_step <label> <command> [args...] — Template-Method pipeline step.
-# Logs start, times the run, records OK/FAIL into the summary table, and
-# dies with context on failure. Replaces the
-# repeated `foo || { log "Failed..."; exit 1; }` blocks.
+# Quiet by default (warn/error): output is captured behind an animated
+# spinner (TTY) or a static start line (pipes); failures dump the capture.
+# Verbose (debug/info) streams output live between start/finish lines.
+# Times the run, records OK/FAIL into the summary table, dies on failure.
+# Interactive steps (prompts!) must use run_step_live instead: captured
+# output would hide their prompts while waiting on invisible input.
 run_step() {
   _step_label="$1"
   shift
-  printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_step_label}...${DOTFILES_RESET}"
+  _step_quiet=0
+  _log_quiet || _step_quiet=1
+  _step_log=""
+  _step_spin=0
+  if [ "$_step_quiet" -eq 0 ]; then
+    _step_try=""
+    if _step_try="$(mktemp "${TMPDIR:-/tmp}/dotfiles-step.XXXXXX" 2>/dev/null)"; then
+      _step_log="$_step_try"
+    fi
+    unset _step_try
+    if _spin_enabled; then
+      _step_spin=1
+      _spinner_start "$_step_label"
+    else
+      printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_step_label}...${DOTFILES_RESET}"
+    fi
+  else
+    printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_step_label}...${DOTFILES_RESET}"
+  fi
   _step_t0=$(_now_s)
+  _step_code=0
+  if [ -n "$_step_log" ]; then
+    "$@" >"$_step_log" 2>&1 || _step_code=$?
+  else
+    "$@" || _step_code=$?
+  fi
+  _step_dur="$(_fmt_dur $(($(_now_s) - _step_t0)))"
+  if [ "$_step_spin" -eq 1 ]; then
+    _spinner_stop
+  fi
+  if [ "$_step_code" -eq 0 ]; then
+    summary_record "$_step_label" OK "$_step_dur"
+    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_step_label} (${_step_dur})${DOTFILES_RESET}"
+    if [ -n "$_step_log" ]; then
+      rm -f "$_step_log"
+    fi
+    unset _step_label _step_quiet _step_log _step_spin
+    unset _step_t0 _step_code _step_dur
+    return 0
+  fi
+  summary_record "$_step_label" FAIL "$_step_dur"
+  if [ -n "$_step_log" ]; then
+    printf '\n'
+    cat "$_step_log"
+    rm -f "$_step_log"
+  fi
+  die "Step failed [${_step_code}]: ${_step_label}" "$_step_code"
+}
+
+# run_step_live <label> <command> [args...] — like run_step but always
+# streams output. REQUIRED for steps that prompt (confirm/read): capture
+# would hide their prompts while waiting on invisible input.
+run_step_live() {
+  _live_label="$1"
+  shift
+  printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_live_label}...${DOTFILES_RESET}"
+  _live_t0=$(_now_s)
   if "$@"; then
-    _step_dt=$(($(_now_s) - _step_t0))
-    summary_record "$_step_label" OK "$(_fmt_dur "$_step_dt")"
-    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_step_label} ($(_fmt_dur "$_step_dt"))${DOTFILES_RESET}"
-    unset _step_label _step_t0 _step_dt
+    _live_dur="$(_fmt_dur $(($(_now_s) - _live_t0)))"
+    summary_record "$_live_label" OK "$_live_dur"
+    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_live_label} (${_live_dur})${DOTFILES_RESET}"
+    unset _live_label _live_t0 _live_dur
     return 0
   else
-    _step_code=$?
-    _step_dt=$(($(_now_s) - _step_t0))
-    summary_record "$_step_label" FAIL "$(_fmt_dur "$_step_dt")"
-    die "Step failed [${_step_code}]: ${_step_label}" "$_step_code"
+    _live_code=$?
+    _live_dur="$(_fmt_dur $(($(_now_s) - _live_t0)))"
+    summary_record "$_live_label" FAIL "$_live_dur"
+    die "Step failed [${_live_code}]: ${_live_label}" "$_live_code"
   fi
 }
 
@@ -170,7 +284,7 @@ _fmt_dur() {
 # summary_record <label> <OK|FAIL|SKIP> [detail=-] — append one result row.
 summary_record() {
   _r_label="$(printf '%s' "${1:-?}" | tr '|' '/')"
-  _r_status="$2"
+  _r_status="${2:-FAIL}"
   _r_detail="${3:--}"
   case "$_r_status" in
     OK | FAIL | SKIP) : ;;

@@ -16,8 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../shared/common.sh"
 
-# run_updater <label> <command...> — best-effort step: logs, skips when the
-# command is missing, records OK/FAIL into the summary table.
+# run_updater <label> <command...> — best-effort step: announces start,
+# skips when the command is missing, records OK/FAIL into the summary table.
 # Never aborts: failure counting belongs to the `timed` parent (every
 # run_updater call site is wrapped by one), so each failure counts once.
 run_updater() {
@@ -29,38 +29,118 @@ run_updater() {
     summary_record "$_label" SKIP
     return 0
   fi
-  log "$_label"
+  printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_label}...${DOTFILES_RESET}"
   _ru_t0=$(_now_s)
   if "$_cmd" "$@"; then
-    summary_record "$_label" OK "$(_fmt_dur $(($(_now_s) - _ru_t0)))"
-    unset _label _cmd _ru_t0
+    _ru_dur="$(_fmt_dur $(($(_now_s) - _ru_t0)))"
+    summary_record "$_label" OK "$_ru_dur"
+    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_label} (${_ru_dur})${DOTFILES_RESET}"
+    unset _label _cmd _ru_t0 _ru_dur
     return 0
   else
     _ru_code=$?
+    _ru_dur="$(_fmt_dur $(($(_now_s) - _ru_t0)))"
     warn "${_label} failed with code ${_ru_code}; continuing."
-    summary_record "$_label" FAIL "$(_fmt_dur $(($(_now_s) - _ru_t0)))"
-    unset _label _cmd _ru_t0 _ru_code
+    summary_record "$_label" FAIL "$_ru_dur"
+    unset _label _cmd _ru_t0 _ru_code _ru_dur
     return 1
   fi
 }
 
+# _timed_quiet — true unless the log level asks for streaming output.
+_timed_quiet() {
+  case "${DOTFILES_LOG_LEVEL:-warn}" in
+    debug | info) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # timed <label> <func> [args...] — run a best-effort updater, recording
 # OK (exit 0), SKIP (exit 2), or FAIL (any other exit) with elapsed time.
+# Mirrors run_step's start/finish lines so the log reads as one trace.
+# Quiet by default (warn/error): the step's output is captured behind an
+# animated spinner (TTY) or a static start line (pipes); failures dump the
+# capture. Verbose (debug/info) streams output live between start/finish.
 # Never fails itself, so one ecosystem never aborts the whole run.
 # Failure totals come from the summary table (SUMMARY_FAILED), not a counter.
 timed() {
   _tm_label="$1"
   shift
+  _tm_quiet=0
+  _timed_quiet || _tm_quiet=1
+  _tm_spin=0
+  if [ "$_tm_quiet" -eq 0 ]; then
+    if _spin_enabled; then
+      _tm_spin=1
+      _spinner_start "$_tm_label"
+    else
+      printf '%b' "${DOTFILES_BLUE}${SYM_STEP} ${_tm_label}... ${DOTFILES_RESET}"
+    fi
+  else
+    printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_tm_label}...${DOTFILES_RESET}"
+  fi
+  _tm_log=""
+  if [ "$_tm_quiet" -eq 0 ]; then
+    _tm_try=""
+    if _tm_try="$(mktemp "${TMPDIR:-/tmp}/dotfiles-update.XXXXXX" 2>/dev/null)"; then
+      _tm_log="$_tm_try"
+    fi
+    unset _tm_try
+  fi
   _tm_t0=$(_now_s)
   _tm_code=0
-  "$@" || _tm_code=$?
-  _tm_dt=$(($(_now_s) - _tm_t0))
+  if [ -n "$_tm_log" ]; then
+    "$@" >"$_tm_log" 2>&1 || _tm_code=$?
+  else
+    "$@" || _tm_code=$?
+  fi
+  _tm_dur="$(_fmt_dur $(($(_now_s) - _tm_t0)))"
+  # Full outcome line when the label is not already on screen (streaming,
+  # or spinner which clears its line); short form otherwise.
+  _tm_full=0
+  if [ "$_tm_spin" -eq 1 ]; then
+    _spinner_stop
+    _tm_full=1
+  elif [ "$_tm_quiet" -eq 1 ]; then
+    _tm_full=1
+  fi
   case "$_tm_code" in
-    0) summary_record "$_tm_label" OK "$(_fmt_dur "$_tm_dt")" ;;
-    2) summary_record "$_tm_label" SKIP ;;
-    *) summary_record "$_tm_label" FAIL "$(_fmt_dur "$_tm_dt")" ;;
+    0)
+      summary_record "$_tm_label" OK "$_tm_dur"
+      if [ "$_tm_full" -eq 1 ]; then
+        printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_tm_label} (${_tm_dur})${DOTFILES_RESET}"
+      else
+        printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} (${_tm_dur})${DOTFILES_RESET}"
+      fi
+      ;;
+    2)
+      summary_record "$_tm_label" SKIP
+      if [ "$_tm_full" -eq 1 ]; then
+        printf '%b\n' "${DOTFILES_YELLOW}${SYM_SKIP} ${_tm_label} (skipped)${DOTFILES_RESET}"
+      else
+        printf '%b\n' "${DOTFILES_YELLOW}${SYM_SKIP} (skipped)${DOTFILES_RESET}"
+      fi
+      ;;
+    *)
+      summary_record "$_tm_label" FAIL "$_tm_dur"
+      _tm_suffix=""
+      if [ -n "$_tm_log" ]; then
+        printf '\n'
+        cat "$_tm_log"
+        _tm_suffix="; output above"
+      fi
+      if [ "$_tm_full" -eq 1 ]; then
+        printf '%b\n' "${DOTFILES_RED}${SYM_FAIL} ${_tm_label} (failed after ${_tm_dur}${_tm_suffix})${DOTFILES_RESET}"
+      else
+        printf '%b\n' "${DOTFILES_RED}${SYM_FAIL} (failed after ${_tm_dur}${_tm_suffix})${DOTFILES_RESET}"
+      fi
+      unset _tm_suffix
+      ;;
   esac
-  unset _tm_label _tm_t0 _tm_code _tm_dt
+  if [ -n "$_tm_log" ]; then
+    rm -f "$_tm_log"
+  fi
+  unset _tm_label _tm_quiet _tm_spin _tm_full _tm_log _tm_t0 _tm_code _tm_dur
   return 0
 }
 
@@ -136,7 +216,6 @@ update_nvm() {
       return 2
     fi
   fi
-  log "Updating Node.js LTS"
   _rc=0
   nvm install --lts --latest-npm || { warn "nvm install --lts failed; continuing."; _rc=1; }
   nvm use --lts || true
@@ -146,7 +225,6 @@ update_nvm() {
 # Function to update RubyGem packages
 update_rubygem() {
   have_cmd gem || return 2
-  log "Updating RubyGem packages"
   _rc=0
   gem update --system || { warn "gem update --system failed; continuing."; _rc=1; }
   gem update || { warn "gem update failed; continuing."; _rc=1; }
@@ -163,7 +241,6 @@ clean_cocopods_cache() {
 # Function to update and clean Homebrew packages
 update_homebrew() {
   have_cmd brew || return 2
-  log "Updating Homebrew packages"
   _rc=0
   brew cleanup || true
   brew update || { warn "brew update failed; continuing."; _rc=1; }
@@ -178,7 +255,6 @@ update_homebrew() {
 # Function to update npm packages globally
 update_npm() {
   have_cmd npm || return 2
-  log "Updating npm packages globally"
   npm update -g || { warn "npm update -g failed; continuing."; return 1; }
 }
 
@@ -191,7 +267,6 @@ clean_yarn_cache() {
 # Function to update Composer packages globally
 update_composer() {
   have_cmd composer || return 2
-  log "Updating Composer packages"
   _rc=0
   composer self-update || { warn "composer self-update failed; continuing."; _rc=1; }
   composer global update || { warn "composer global update failed; continuing."; _rc=1; }

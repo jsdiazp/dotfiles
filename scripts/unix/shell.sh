@@ -40,7 +40,7 @@ zshrc_block() {
   case "$1" in
     autosuggest) printf '%s\n' "ZSH_AUTOSUGGEST_STRATEGY=(history completion)" ;;
     highlight) printf '%s\n' "ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)" ;;
-    homebrew) printf '%s\n' "eval \"$2\"" ;;
+    homebrew) printf '%s\n' "eval \"${2:-}\"" ;;
     fzf) printf '%s\n' "source <(fzf --zsh)" ;;
     starship) printf '%s\n' 'eval "$(starship init zsh)"' ;;
     thefuck) printf '%s\n' 'eval "$(thefuck --alias)"' ;;
@@ -157,7 +157,7 @@ setup_zsh() {
 
 # Activate ZSH as the default shell (portable path, not hardcoded /bin/zsh).
 activate_zsh() {
-  _zsh="$(command -v zsh)"
+  _zsh="$(command -v zsh || true)"
   if [ -z "$_zsh" ]; then
     die "zsh not found on PATH; cannot chsh."
   fi
@@ -326,7 +326,8 @@ main() {
   detect_os
   run_step "Setting up ZSH" setup_zsh
   run_step "Installing Node.js" install_node
-  run_step "Installing Homebrew" install_homebrew
+  # Live output: install_homebrew may prompt (confirm reinstall).
+  run_step_live "Installing Homebrew" install_homebrew
   run_step "Installing tools" install_tools
   run_step "Configuring dotfiles" configure_dotfiles
   run_step "Activating ZSH shell" activate_zsh

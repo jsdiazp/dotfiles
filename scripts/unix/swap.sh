@@ -117,7 +117,8 @@ main() {
   run_step "Validating system compatibility" validate_compatibility
   run_step "Checking the System for Swap Information" check_swap_info
   run_step "Checking Available Space on the Hard Drive Partition" check_disk_space
-  run_step "Creating a Swap File" create_swap_file
+  # Live output: create_swap_file prompts (resize? size?).
+  run_step_live "Creating a Swap File" create_swap_file
   run_step "Enabling the Swap File" enable_swap_file
   run_step "Making the Swap File Permanent" make_swap_permanent
   print_summary "Swap summary"

@@ -18,6 +18,10 @@
 #     (no Enter needed); pasted/multi-char input still works.
 #   - MENU_USE_FZF=auto|always|never + MENU_FZF_THRESHOLD=4 — fuzzy picker
 #     via fzf when it helps (many options); numbered fallback otherwise.
+#   - MENU_CLEAR=1 — clear the screen on first render, so each menu starts
+#     fresh instead of scrolling; retries never clear (errors stay visible).
+#     Opt out per call with MENU_CLEAR=0, or globally with DOTFILES_NO_CLEAR=1
+#     (never clears when stdout is not a TTY: pipes/logs stay clean).
 #
 # Compatibility: bash >= 3.2 and zsh.
 #
@@ -69,6 +73,7 @@ MENU_PATH="${MENU_PATH:-}"
 MENU_SINGLE_KEY="${MENU_SINGLE_KEY:-1}"
 MENU_USE_FZF="${MENU_USE_FZF:-auto}"
 MENU_FZF_THRESHOLD="${MENU_FZF_THRESHOLD:-4}"
+MENU_CLEAR="${MENU_CLEAR:-1}"
 
 _handle_menu_exit() {
   printf '%b\n' "${BLUE}Happy coding!${RESET}"
@@ -227,6 +232,20 @@ _menu_pick_fzf() {
   return 1
 }
 
+# _menu_clear_screen — fresh screen for a newly entered menu.
+# TTY-only (piped output is never touched) and retry-safe: display_menu
+# calls this once on entry, so validation errors stay visible below.
+_menu_clear_screen() {
+  [ "${MENU_CLEAR:-1}" = "1" ] || return 0
+  [ -z "${DOTFILES_NO_CLEAR:-}" ] || return 0
+  [ -t 1 ] || return 0
+  if have_cmd clear; then
+    clear
+  else
+    printf '\033[H\033[2J'
+  fi
+}
+
 # _menu_prompt <count> — "[1/2/b/q]: " with an Enter=default hint when set.
 _menu_prompt() {
   _prompt="[1"
@@ -260,7 +279,12 @@ display_menu() {
     return 1
   fi
 
+  _menu_first_render=1
   while true; do
+    if [ "$_menu_first_render" -eq 1 ]; then
+      _menu_first_render=0
+      _menu_clear_screen
+    fi
     if [ -n "${MENU_PATH:-}" ]; then
       printf '%b\n' "${BLUE}${MENU_PATH}${RESET}"
     fi

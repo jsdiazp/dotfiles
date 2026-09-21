@@ -13,14 +13,16 @@
 # Portable: bash >= 3.2 and zsh. macOS `readlink -f` is NOT used.
 
 # Usage: setup.sh [--unix docker|shell|swap|update|N] [--server ubuntu|N]
-#                [--list] [-h|--help]
-# Without flags, the interactive menu is shown. display_menu return codes:
+#                [-v|--verbose] [--debug] [-q|--quiet] [--list] [-h|--help]
+# Without a task flag, the interactive menu is shown. display_menu codes:
 # 0 = selected, 1 = back, 3 = EOF (input gone) — 3 unwinds to a farewell.
 
 set -euo pipefail
 
 # Portable script dir (no GNU `readlink -f`, which is missing on macOS).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Captured once: inside functions $0 is the function name under zsh.
+SCRIPT_NAME="$(basename "$0")"
 
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/scripts/shared/common.sh"
@@ -68,15 +70,19 @@ server_task_number() {
 
 print_usage() {
   cat <<EOF
-Usage: $(basename "$0") [options]
+Usage: $SCRIPT_NAME [options]
 
 Options:
   --unix <task>    Run a UNIX task directly: docker, shell, swap, update (or 1-4)
   --server <task>  Run a server task directly: ubuntu (or 1)
+  -v, --verbose    Detailed output (info level), inherited by task scripts
+  --debug          Debug output, inherited by task scripts
+  -q, --quiet      Errors only
   --list           List available tasks and exit
   -h, --help       Show this help and exit
 
-Without options, the interactive menu is shown.
+Without a task option, the interactive menu is shown.
+Verbosity flags may come before or after the task option and combine with it.
 EOF
 }
 
@@ -163,40 +169,73 @@ main_menu() {
   esac
 }
 
+# resolve_verbosity — first pass over CLI args; CLI flags win over the
+# environment. The result is EXPORTED so task subprocesses spawned by
+# execute_script inherit it (export is what crosses the process boundary).
+resolve_verbosity() {
+  for _arg in "$@"; do
+    case "$_arg" in
+      -v | --verbose) DOTFILES_LOG_LEVEL="info" ;;
+      --debug) DOTFILES_LOG_LEVEL="debug" ;;
+      -q | --quiet) DOTFILES_LOG_LEVEL="error" ;;
+    esac
+  done
+  export DOTFILES_LOG_LEVEL="${DOTFILES_LOG_LEVEL:-warn}"
+  unset _arg
+}
+
 # Dispatch CLI flags. Returns 0 when the caller should continue to the
 # interactive menu, otherwise exits the script directly.
 dispatch_cli() {
   if [ "$#" -eq 0 ]; then
     return 0
   fi
-  case "$1" in
-    -h | --help)
-      print_usage
-      exit 0
-      ;;
-    --list)
-      print_tasks
-      exit 0
-      ;;
+  _cmd=""
+  _cmd_arg=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h | --help)
+        print_usage
+        exit 0
+        ;;
+      --list)
+        print_tasks
+        exit 0
+        ;;
+      -v | --verbose | --debug | -q | --quiet)
+        shift
+        ;;
+      --unix | --server)
+        [ "$#" -ge 2 ] || die "Missing value for $1. See --help."
+        [ -z "$_cmd" ] || die "Only one of --unix / --server may be given."
+        _cmd="$1"
+        _cmd_arg="$2"
+        shift 2
+        ;;
+      *)
+        die "Unknown option: $1. See --help."
+        ;;
+    esac
+  done
+  if [ -z "$_cmd" ]; then
+    return 0 # Flags only (e.g. bare --verbose) — show the interactive menu.
+  fi
+  case "$_cmd" in
     --unix)
-      [ "$#" -ge 2 ] || die "Missing value for --unix. See --help."
-      _num="$(unix_task_number "$2")" || die "Unknown UNIX task: $2. See --list."
+      _num="$(unix_task_number "$_cmd_arg")" || die "Unknown UNIX task: $_cmd_arg. See --list."
       execute_script "$(unix_script_for "$_num")" "$(task_interpreter)"
       exit "$?"
       ;;
     --server)
-      [ "$#" -ge 2 ] || die "Missing value for --server. See --help."
-      _num="$(server_task_number "$2")" || die "Unknown server task: $2. See --list."
+      _num="$(server_task_number "$_cmd_arg")" || die "Unknown server task: $_cmd_arg. See --list."
       execute_script "$(server_script_for "$_num")" "$(task_interpreter)"
       exit "$?"
-      ;;
-    *)
-      die "Unknown option: $1. See --help."
       ;;
   esac
 }
 
 main() {
+  resolve_verbosity "$@"
   dispatch_cli "$@"
   while true; do
     _rc=0

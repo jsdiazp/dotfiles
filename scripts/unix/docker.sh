@@ -26,23 +26,25 @@ _require_sudo_apt() {
 }
 
 _add_docker_apt_repo() {
-  _distro="$1"
+  _repo_distro="$1"
   require_cmd dpkg
-  _sudo="$(sudo_if_needed)"
-  $_sudo install -m 0755 -d /etc/apt/keyrings
+  _repo_sudo="$(sudo_if_needed)"
+  $_repo_sudo install -m 0755 -d /etc/apt/keyrings
   # set -o pipefail is active, so a curl failure aborts instead of being
   # masked by `tee` (the old script's bug).
-  curl -fsSL "https://download.docker.com/linux/${_distro}/gpg" | $_sudo tee /etc/apt/keyrings/docker.asc >/dev/null
-  $_sudo chmod a+r /etc/apt/keyrings/docker.asc
-  _arch="$(dpkg --print-architecture)"
+  curl -fsSL "https://download.docker.com/linux/${_repo_distro}/gpg" | $_repo_sudo tee /etc/apt/keyrings/docker.asc >/dev/null
+  $_repo_sudo chmod a+r /etc/apt/keyrings/docker.asc
+  _repo_arch="$(dpkg --print-architecture)"
   # VERSION_CODENAME can be absent (e.g. Debian sid); fall back gracefully.
-  _codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
-  if [ -z "$_codename" ]; then
-    _codename="$(lsb_release -cs 2>/dev/null || printf 'stable')"
+  # The `|| true` keeps set -e alive for the fallback when os-release is
+  # missing or unreadable (minimal containers).
+  _repo_codename="$(. /etc/os-release 2>/dev/null && printf '%s' "${VERSION_CODENAME:-}" || true)"
+  if [ -z "$_repo_codename" ]; then
+    _repo_codename="$(lsb_release -cs 2>/dev/null || printf 'stable')"
   fi
   printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
-    "$_arch" "$_distro" "$_codename" | $_sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-  unset _distro _arch _codename _sudo
+    "$_repo_arch" "$_repo_distro" "$_repo_codename" | $_repo_sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+  unset _repo_distro _repo_arch _repo_codename _repo_sudo
 }
 
 # Function to install Docker on Debian/Ubuntu

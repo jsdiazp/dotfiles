@@ -53,44 +53,44 @@ user_home() {
 }
 
 as_user() {
-  _user="$1"
+  _au_user="$1"
   shift
-  if [ "$(id -un)" = "$_user" ]; then
+  if [ "$(id -un)" = "$_au_user" ]; then
     bash -c "$*"
   else
-    su - "$_user" -c "$*"
+    su - "$_au_user" -c "$*"
   fi
-  unset _user
+  unset _au_user
 }
 
 # Idempotent marked block in a user's .zshrc.
 user_zshrc_block() {
-  _user="$1"
-  _home="$2"
-  _id="$3"
-  _comment="$4"
-  _code="$5"
-  ensure_dir "$_home"
-  [ -e "$_home/.zshrc" ] || : >"$_home/.zshrc"
-  if ! grep -qF "# >>> dotfiles:${_id} >>>" "$_home/.zshrc" 2>/dev/null; then
+  _uzb_user="$1"
+  _uzb_home="$2"
+  _uzb_id="$3"
+  _uzb_comment="$4"
+  _uzb_code="$5"
+  ensure_dir "$_uzb_home"
+  [ -e "$_uzb_home/.zshrc" ] || : >"$_uzb_home/.zshrc"
+  if ! grep -qF "# >>> dotfiles:${_uzb_id} >>>" "$_uzb_home/.zshrc" 2>/dev/null; then
     {
       printf '\n# >>> dotfiles:%s >>>\n# %s\n%s\n# <<< dotfiles:%s <<<\n' \
-        "$_id" "$_comment" "$_code" "$_id"
-    } >>"$_home/.zshrc"
+        "$_uzb_id" "$_uzb_comment" "$_uzb_code" "$_uzb_id"
+    } >>"$_uzb_home/.zshrc"
   fi
-  unset _user _home _id _comment _code
+  unset _uzb_user _uzb_home _uzb_id _uzb_comment _uzb_code
 }
 
 user_activate_plugins() {
-  _home="$1"
+  _uap_home="$1"
   shift
-  _plugins="$*"
-  if grep -q '^plugins=' "$_home/.zshrc" 2>/dev/null; then
-    sed -i "s/^plugins=.*/plugins=(${_plugins})/" "$_home/.zshrc"
+  _uap_plugins="$*"
+  if grep -q '^plugins=' "$_uap_home/.zshrc" 2>/dev/null; then
+    sed -i "s/^plugins=.*/plugins=(${_uap_plugins})/" "$_uap_home/.zshrc"
   else
-    printf '\nplugins=(%s)\n' "$_plugins" >>"$_home/.zshrc"
+    printf '\nplugins=(%s)\n' "$_uap_plugins" >>"$_uap_home/.zshrc"
   fi
-  unset _home _plugins
+  unset _uap_home _uap_plugins
 }
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ install_required_packages() {
 
 remove_unneeded_packages() {
   # shellcheck disable=SC2086
-  run_step "Removing unneeded packages" sudo apt-get remove -y $APT_PURGE || true
+  run_step "Removing unneeded packages" sudo apt-get remove -y $APT_PURGE
 }
 
 setup_unattended_upgrades() {
@@ -155,8 +155,9 @@ setup_brew() {
   sudo chown -R ubuntu:ubuntu "$BREW_FOLDER/.linuxbrew"
   # NOTE: the brew binary is invoked by absolute path — no shellenv eval is
   # needed for `update`, which avoids nested-quote breakage inside su -c.
-  run_step "Updating Homebrew" sudo -u ubuntu "$_brew_bin" update || \
-    warn "brew update failed; continuing."
+  # Fail-fast like every other run_step here (no dead `|| warn`: run_step
+  # exits on failure, so trailing guards would never run).
+  run_step "Updating Homebrew" sudo -u ubuntu "$_brew_bin" update
   unset _brew_bin
 }
 
@@ -203,64 +204,64 @@ setup_nix() {
 # Per-user shell provisioning (decomposed from one 120-line function)
 # ---------------------------------------------------------------------------
 reset_user_shell_state() {
-  _user="$1"
-  _home="$2"
-  for _f in "$_home/.oh-my-zsh" "$_home/.zshrc" "$_home/.zprofile" "$_home/.nvm"; do
-    if [ -e "$_f" ] || [ -L "$_f" ]; then
-      rm -rf "$_f"
+  _rst_user="$1"
+  _rst_home="$2"
+  for _rst_f in "$_rst_home/.oh-my-zsh" "$_rst_home/.zshrc" "$_rst_home/.zprofile" "$_rst_home/.nvm"; do
+    if [ -e "$_rst_f" ] || [ -L "$_rst_f" ]; then
+      rm -rf "$_rst_f"
     fi
   done
   if have_cmd pip3; then
-    sudo -H -u "$_user" pip3 uninstall -y thefuck 2>/dev/null || true
+    sudo -H -u "$_rst_user" pip3 uninstall -y thefuck 2>/dev/null || true
   fi
-  _starship="$(command -v starship 2>/dev/null || true)"
-  if [ -n "$_starship" ]; then
-    case "$_starship" in
+  _rst_starship="$(command -v starship 2>/dev/null || true)"
+  if [ -n "$_rst_starship" ]; then
+    case "$_rst_starship" in
       *nix*) : ;;
-      *) rm -f "$_starship" || sudo rm -f "$_starship" || true ;;
+      *) rm -f "$_rst_starship" || sudo rm -f "$_rst_starship" || true ;;
     esac
   fi
-  unset _user _home _f _starship
+  unset _rst_user _rst_home _rst_f _rst_starship
 }
 
 install_user_nix_packages() {
-  _user="$1"
+  _inp_user="$1"
   # shellcheck disable=SC2086
-  as_user "$_user" "nix-env -iA $NIX_PACKAGES" || warn "nix-env install failed for $_user; continuing."
-  unset _user
+  as_user "$_inp_user" "nix-env -iA $NIX_PACKAGES" || warn "nix-env install failed for $_inp_user; continuing."
+  unset _inp_user
 }
 
 install_user_oh_my_zsh() {
-  _home="$1"
-  if [ ! -d "$_home/.oh-my-zsh/.git" ]; then
-    rm -rf "$_home/.oh-my-zsh"
-    git clone https://github.com/robbyrussell/oh-my-zsh.git "$_home/.oh-my-zsh"
+  _ioz_home="$1"
+  if [ ! -d "$_ioz_home/.oh-my-zsh/.git" ]; then
+    rm -rf "$_ioz_home/.oh-my-zsh"
+    git clone https://github.com/robbyrussell/oh-my-zsh.git "$_ioz_home/.oh-my-zsh"
   fi
-  if [ ! -f "$_home/.zshrc" ]; then
-    cp "$_home/.oh-my-zsh/templates/zshrc.zsh-template" "$_home/.zshrc"
+  if [ ! -f "$_ioz_home/.zshrc" ]; then
+    cp "$_ioz_home/.oh-my-zsh/templates/zshrc.zsh-template" "$_ioz_home/.zshrc"
   fi
-  unset _home
+  unset _ioz_home
 }
 
 install_user_zsh_plugin() {
-  _home="$1"
-  _repo="$2"
-  _dest="$_home/.oh-my-zsh/custom/plugins/$(basename "$_repo")"
-  if [ ! -d "$_dest/.git" ]; then
-    rm -rf "$_dest"
-    git clone "https://github.com/${_repo}.git" "$_dest"
+  _izp_home="$1"
+  _izp_repo="$2"
+  _izp_dest="$_izp_home/.oh-my-zsh/custom/plugins/$(basename "$_izp_repo")"
+  if [ ! -d "$_izp_dest/.git" ]; then
+    rm -rf "$_izp_dest"
+    git clone "https://github.com/${_izp_repo}.git" "$_izp_dest"
   fi
-  unset _home _repo _dest
+  unset _izp_home _izp_repo _izp_dest
 }
 
 configure_user_locales() {
-  _home="$1"
-  if grep -q '^# export LANG=' "$_home/.zshrc" 2>/dev/null; then
-    sed -i 's/^# export LANG=en_US.UTF-8/export LANG=en_US.UTF-8/' "$_home/.zshrc"
+  _loc_home="$1"
+  if grep -q '^# export LANG=' "$_loc_home/.zshrc" 2>/dev/null; then
+    sed -i 's/^# export LANG=en_US.UTF-8/export LANG=en_US.UTF-8/' "$_loc_home/.zshrc"
   fi
-  user_zshrc_block "$(basename "$_home")" "$_home" "locale" "Locale" "export LC_ALL=en_US.UTF-8"
-  user_zshrc_block "$(basename "$_home")" "$_home" "nix-locale" "Nix Locale" "export LOCALE_ARCHIVE=/usr/lib/locale/locale-archive"
-  unset _home
+  user_zshrc_block "$(basename "$_loc_home")" "$_loc_home" "locale" "Locale" "export LC_ALL=en_US.UTF-8"
+  user_zshrc_block "$(basename "$_loc_home")" "$_loc_home" "nix-locale" "Nix Locale" "export LOCALE_ARCHIVE=/usr/lib/locale/locale-archive"
+  unset _loc_home
 }
 
 configure_user_configs() {
