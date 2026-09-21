@@ -28,6 +28,8 @@ DOTFILES_OS="$(os_family)"
 # ---------------------------------------------------------------------------
 BREW_TAPS="oven-sh/bun"
 BREW_TOOLS="bat btop bun fastfetch fd fzf lazydocker lazygit lsd ripgrep starship thefuck tmux vim zoxide"
+# macOS-only brews (Linuxbrew has no Mac App Store).
+BREW_TOOLS_DARWIN="mas"
 
 ZSH_PLUGINS="git zsh-autosuggestions zsh-syntax-highlighting zsh-nvm"
 
@@ -264,7 +266,12 @@ install_tools() {
   done
 
   # shellcheck disable=SC2086
-  run_step "Installing brew tools" brew install $BREW_TOOLS
+  _tools="$BREW_TOOLS"
+  case "$DOTFILES_OS" in
+    darwin) _tools="$_tools $BREW_TOOLS_DARWIN" ;;
+  esac
+  run_step "Installing brew tools" brew install $_tools
+  unset _tools
 
   configure_tool "fzf" "$(zshrc_block fzf)"
   configure_tool "starship" "$(zshrc_block starship)"

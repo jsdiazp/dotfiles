@@ -152,6 +152,14 @@ update_macos() {
   run_updater "Updating macOS" softwareupdate -i -a
 }
 
+# Function to upgrade Mac App Store apps via mas (https://github.com/mas-cli/mas)
+# Needs `brew install mas` plus an Apple Account sign-in for owned apps;
+# mas requests root privileges itself when an upgrade needs them.
+update_mas() {
+  have_cmd mas || return 2
+  run_updater "Upgrading Mac App Store apps" mas upgrade
+}
+
 # Function to update Linux packages
 update_linux() {
   have_cmd apt-get || return 2
@@ -285,7 +293,10 @@ main() {
   log "Starting System Updates" false false
 
   case "$(os_family)" in
-    darwin) timed "macOS" update_macos ;;
+    darwin)
+      timed "macOS" update_macos
+      timed "Mac App Store" update_mas
+      ;;
     linux | wsl)
       timed "Linux packages" update_linux
       timed "WinGet (WSL)" update_winget_wsl
