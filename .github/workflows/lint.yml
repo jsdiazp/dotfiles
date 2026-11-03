@@ -1,0 +1,53 @@
+name: Lint
+
+# Static checks for the shell side of the dotfiles.
+#   - shellcheck: correctness/smell checks (.shellcheckrc at repo root)
+#   - shfmt:     formatting, driven by .editorconfig (no CLI flags on purpose)
+#
+# Both steps are strict: they fail on findings. That is deliberate — the
+# checks must not be weakened to make today's code pass. Current expected
+# status is documented in the T1 report (reports/t1-report.md).
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Shell (shellcheck + shfmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # apt only: no third-party actions, nothing to trust beyond Ubuntu's
+      # archives. Versions track the runner image (noble: shellcheck 0.9.0,
+      # shfmt 3.8.0) and are printed so a version skew is visible in the log.
+      - name: Install shellcheck and shfmt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck shfmt
+          shellcheck --version
+          shfmt --version
+
+      # setup.sh plus every task script. `scripts/*/*.sh` keeps the same file
+      # set used by the acceptance checks and skips vendored tmux plugins.
+      - name: shellcheck
+        run: |
+          shopt -s nullglob
+          files=(setup.sh scripts/*/*.sh)
+          printf 'shellcheck: %d file(s)\n' "${#files[@]}"
+          shellcheck -x "${files[@]}"
+
+      # No -i/-ci flags: formatting options come from .editorconfig, which is
+      # the same file editors read. -d prints a diff and exits non-zero.
+      - name: shfmt
+        run: |
+          shopt -s nullglob
+          files=(setup.sh scripts/*/*.sh)
+          printf 'shfmt: %d file(s)\n' "${#files[@]}"
+          shfmt -d "${files[@]}"
