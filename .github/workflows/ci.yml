@@ -1,0 +1,130 @@
+name: CI
+
+# Merge gate for pull requests. Branch protection requires exactly one status
+# check: "CI gate", which passes only when every job below succeeded. Jobs can
+# be added or renamed here without touching the repository ruleset.
+#
+# Safety posture: `pull_request` (never pull_request_target), read-only token,
+# no secrets, one first-party action pinned to a commit SHA, and every other
+# tool installed from a checksum-verified release (.github/scripts/install-tool.sh).
+# No path filters: the required check must always report.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (shellcheck + shfmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install shellcheck and shfmt
+        run: |
+          bash .github/scripts/install-tool.sh shellcheck
+          bash .github/scripts/install-tool.sh shfmt
+
+      # Every shell file the repo ships or tests with. No -i/-ci flags for
+      # shfmt: formatting comes from .editorconfig, the same file editors
+      # read. Reproduce locally with the same two commands.
+      - name: shellcheck and shfmt
+        run: |
+          shopt -s nullglob
+          files=(setup.sh scripts/*/*.sh .github/scripts/*.sh tests/*.sh tests/lib/*.sh)
+          printf 'linting %d file(s)\n' "${#files[@]}"
+          shellcheck -x "${files[@]}"
+          shfmt -d "${files[@]}"
+
+  actionlint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # actionlint also shellchecks `run:` blocks when shellcheck is on PATH,
+      # so give it the pinned version instead of the runner image's.
+      - name: Install actionlint and shellcheck
+        run: |
+          bash .github/scripts/install-tool.sh shellcheck
+          bash .github/scripts/install-tool.sh actionlint
+
+      - name: actionlint
+        run: actionlint
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository (full history)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: bash .github/scripts/install-tool.sh gitleaks
+
+      # --redact keeps any real secret out of the public job log.
+      - name: gitleaks
+        run: gitleaks git --no-banner --redact --verbose .
+
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest ships the real /bin/bash 3.2.57 the scripts must run on;
+        # ubuntu-latest covers bash 5.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Optional tools: tests that need them skip when they are missing.
+      - name: Install test dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux zsh
+
+      - name: Show bash under test
+        run: /bin/bash --version | head -1
+
+      - name: Run tests
+        run: /bin/bash tests/run.sh
+
+  gate:
+    name: CI gate
+    # always(): a failed or cancelled job must make this FAIL, not be skipped
+    # (a skipped required check counts as passing for merge purposes).
+    if: always()
+    needs: [lint, actionlint, secrets, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::a required job finished with result: $result"
+              exit 1
+            fi
+          done

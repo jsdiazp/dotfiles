@@ -1,0 +1,12 @@
+# Keeps the SHA-pinned GitHub Actions in .github/workflows/ current: Dependabot
+# opens a PR (with the new commit SHA and its version comment) when a release
+# appears. CI tools (shellcheck, shfmt, ...) are pinned in
+# .github/scripts/install-tool.sh and bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
