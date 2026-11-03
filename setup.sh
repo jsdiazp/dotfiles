@@ -10,7 +10,7 @@
 #   - Shared behavior (colors, logging, menu) is sourced from
 #     scripts/shared/* — no duplicated menu code.
 #
-# Portable: bash >= 3.2 and zsh. macOS `readlink -f` is NOT used.
+# Portable: bash >= 3.2. macOS `readlink -f` is NOT used.
 
 # Usage: setup.sh [--unix docker|shell|swap|update|N] [--server ubuntu|N]
 #                [-v|--verbose] [--debug] [-q|--quiet] [--list] [-h|--help]
@@ -21,7 +21,7 @@ set -euo pipefail
 
 # Portable script dir (no GNU `readlink -f`, which is missing on macOS).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Captured once: inside functions $0 is the function name under zsh.
+# Captured once so every function sees the same script name.
 SCRIPT_NAME="$(basename "$0")"
 
 # shellcheck disable=SC1091
@@ -110,14 +110,12 @@ execute_script() {
   unset _script _interpreter
 }
 
-# Preferred interpreter for task scripts: zsh when present (scripts target
-# zsh), otherwise bash. Centralizes the old hardcoded `zsh` argument.
+# Interpreter for task scripts: always bash. Every task script carries a
+# `#!/usr/bin/env bash` shebang and relies on bash word-splitting of unquoted
+# expansions, which zsh does not do ($T with T="a b c" is one word in zsh).
+# Single seam used by unix_menu, server_menu and dispatch_cli.
 task_interpreter() {
-  if command -v zsh >/dev/null 2>&1; then
-    printf 'zsh\n'
-  else
-    printf 'bash\n'
-  fi
+  printf 'bash\n'
 }
 
 unix_menu() {
