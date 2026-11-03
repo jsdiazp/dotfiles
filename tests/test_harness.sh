@@ -3,7 +3,7 @@
 
 test_environment_is_scrubbed() {
   assert_eq "$TEST_TMP/home" "$HOME" "HOME is the scratch dir"
-  assert_eq "$STUBS:/usr/bin:/bin" "$PATH" "PATH is stubs + system dirs only"
+  assert_eq "$STUBS:$SYS_BIN" "$PATH" "PATH is stubs + the filtered system-tool farm only"
   assert_eq "1" "$DOTFILES_ASCII" "ASCII output is pinned"
   assert_eq "" "${ZSH:-}" "ZSH from the caller's shell must not leak in"
   assert_eq "" "${DOTFILES_ASSUME_YES:-}" "no ambient --yes"
@@ -78,4 +78,32 @@ test_runner_passes_and_filters() {
   assert_contains "$OUT" "1 passed, 0 failed, 0 skipped"
   TESTS_DIR="$d" run "$TEST_BASH" "$REPO_ROOT/tests/run.sh" no_such_test
   assert_rc 1 "a filter that matches nothing is an error, not a green run"
+}
+
+# A runner image may ship composer, git, curl, npm... A test must never reach
+# the real one by accident, and "tool is absent" must mean the same everywhere.
+test_package_managers_and_privileged_tools_are_not_on_path() {
+  local tool
+  for tool in sudo su brew mas apt-get dpkg dnf snap flatpak npm node yarn \
+    composer gem pod docker git curl wget chsh systemctl; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      fail "$tool must not be reachable inside a test (found $(command -v "$tool"))"
+    fi
+  done
+}
+
+test_basic_system_tools_are_still_available() {
+  local tool
+  for tool in sed awk grep cat cp mv rm ln mkdir mktemp date env tr sort cmp \
+    chmod dirname basename readlink head tail wc sleep ps; do
+    command -v "$tool" >/dev/null 2>&1 || fail "$tool should be available"
+  done
+}
+
+test_a_stub_makes_a_denied_tool_visible_again() {
+  make_stub git
+  run git status
+  assert_rc 0
+  assert_called "git status"
+  assert_eq "$STUBS/git" "$(command -v git)" "the stub, not a real git"
 }

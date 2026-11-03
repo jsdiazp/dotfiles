@@ -299,6 +299,9 @@ test_oh_my_zsh_upgrade_script_and_skip() {
   install_stubs
   make_nvm_stub
   make_omz_stub
+  # update_ohmyzsh skips itself unless git is on PATH; the suite's PATH has no
+  # real git, so provide one explicitly.
+  make_stub git
 
   run_update
   assert_rc 0

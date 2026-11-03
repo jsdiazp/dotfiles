@@ -7,7 +7,12 @@
 # A test file is tests/test_*.sh and defines functions named test_*. Every
 # test runs in its OWN process with a scrubbed environment (env -i):
 #   HOME, TMPDIR   scratch dirs under a per-test temp root (never your real ones)
-#   PATH           "$STUBS:/usr/bin:/bin" — stub binaries first, no brew/npm/...
+#   PATH           "$STUBS:$SYS_BIN" — stub binaries first, then a symlink farm
+#                  of the system tools in /usr/bin and /bin MINUS package
+#                  managers, network/VCS tools and privileged commands (see
+#                  DENY_TOOLS). A tool a test forgot to stub is "command not
+#                  found", never the real one, and a tool being absent does
+#                  not depend on what the runner image happens to ship.
 #   CALLS          file where stubs log their argv (see tests/lib/stubs.sh)
 #   NO_COLOR=1 DOTFILES_ASCII=1 DOTFILES_NO_SPINNER=1 LC_ALL=C
 #   REPO_ROOT, TEST_BASH (the bash running this runner), TEST_TMP, STUBS
@@ -29,6 +34,19 @@ REPO_ROOT="$(cd "$HERE/.." && pwd)"
 TEST_BASH="$BASH"
 FILTER="${1:-}"
 
+# Tools that must never resolve to the real binary inside a test: installers
+# and package managers, language toolchains the scripts probe, network/VCS
+# tools, and anything privileged or system-changing. Tests stub what they need.
+DENY_TOOLS=" sudo su doas brew mas softwareupdate apt apt-get apt-cache aptitude
+  dpkg dpkg-query dnf yum rpm snap flatpak npm npx node nodejs yarn pnpm corepack
+  composer php gem bundle bundler ruby pod pip pip3 pipx docker podman git curl
+  wget ssh scp sftp rsync chsh usermod useradd userdel groupdel systemctl service
+  swapon swapoff mkswap fallocate mount umount nix nix-env starship "
+
+RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/dotfiles-suite.XXXXXX")"
+trap 'rm -rf "$RUN_TMP"' EXIT
+SYS_BIN="$RUN_TMP/sys-bin"
+
 passed=0
 failed=0
 skipped=0
@@ -40,6 +58,26 @@ _tool() {
 TEST_PYTHON3="$(_tool python3)"
 TEST_TMUX="$(_tool tmux)"
 TEST_ZSH="$(_tool zsh)"
+
+# _build_sys_bin — fill $SYS_BIN with symlinks to the allowed system tools.
+# /bin is linked first and /usr/bin second so /usr/bin wins, as on a real PATH.
+_build_sys_bin() {
+  local dir f name
+  local -a links
+  mkdir -p "$SYS_BIN"
+  for dir in /bin /usr/bin; do
+    links=()
+    for f in "$dir"/*; do
+      [ -e "$f" ] || continue
+      name="${f##*/}"
+      case "$DENY_TOOLS" in
+        *[[:space:]]"$name"[[:space:]]*) continue ;;
+      esac
+      links[${#links[@]}]="$f"
+    done
+    ln -sf "${links[@]}" "$SYS_BIN/"
+  done
+}
 
 # _list_tests <file> — print the names of its test_* functions, one per line.
 _list_tests() {
@@ -58,7 +96,7 @@ _run_one() {
   mkdir -p "$tmp/home" "$tmp/tmp" "$tmp/bin"
   env -i \
     HOME="$tmp/home" TMPDIR="$tmp/tmp" TERM=dumb LC_ALL=C \
-    PATH="$tmp/bin:/usr/bin:/bin" STUBS="$tmp/bin" CALLS="$tmp/calls" \
+    PATH="$tmp/bin:$SYS_BIN" STUBS="$tmp/bin" SYS_BIN="$SYS_BIN" CALLS="$tmp/calls" \
     TEST_TMP="$tmp" REPO_ROOT="$REPO_ROOT" TEST_BASH="$TEST_BASH" \
     LIB_DIR="$LIB_DIR" \
     TEST_PYTHON3="$TEST_PYTHON3" TEST_TMUX="$TEST_TMUX" TEST_ZSH="$TEST_ZSH" \
@@ -92,6 +130,7 @@ _run_one() {
 
 main() {
   local file fn id
+  _build_sys_bin
   for file in "$TESTS_DIR"/test_*.sh; do
     [ -e "$file" ] || continue
     for fn in $(_list_tests "$file"); do
