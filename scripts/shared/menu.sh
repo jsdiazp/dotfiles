@@ -22,6 +22,9 @@
 #     fresh instead of scrolling; retries never clear (errors stay visible).
 #     Opt out per call with MENU_CLEAR=0, or globally with DOTFILES_NO_CLEAR=1
 #     (never clears when stdout is not a TTY: pipes/logs stay clean).
+#   - MENU_KEEP_SCREEN=1 — one-shot: the NEXT menu does not clear, so output
+#     printed just before it (a task's summary) stays visible. `clear` also
+#     erases the scrollback on xterm-like terminals, so it would be lost.
 #
 # Compatibility: bash >= 3.2 and zsh.
 #
@@ -239,10 +242,26 @@ _menu_pick_fzf() {
   return 1
 }
 
+# _menu_banner <title> — plain-ASCII frame sized to the title, same colors as
+# before (NO_COLOR is honored through the color vars).
+# shortcut: width counts characters, so a wide-glyph title would misalign; all
+# current titles are ASCII, upgrade if that changes.
+_menu_banner() {
+  local _rule
+  _rule="$(printf '%*s' $((${#1} + 2)) '' | tr ' ' '-')"
+  printf '%b\n' "${BOLD}${GREEN}+${_rule}+${RESET}"
+  printf '%b\n' "${BOLD}${GREEN}| ${1} |${RESET}"
+  printf '%b\n\n' "${BOLD}${GREEN}+${_rule}+${RESET}"
+}
+
 # _menu_clear_screen — fresh screen for a newly entered menu.
 # TTY-only (piped output is never touched) and retry-safe: display_menu
 # calls this once on entry, so validation errors stay visible below.
 _menu_clear_screen() {
+  if [ -n "${MENU_KEEP_SCREEN:-}" ]; then
+    MENU_KEEP_SCREEN=""
+    return 0
+  fi
   [ "${MENU_CLEAR:-1}" = "1" ] || return 0
   [ -z "${DOTFILES_NO_CLEAR:-}" ] || return 0
   [ -t 1 ] || return 0
@@ -297,7 +316,7 @@ display_menu() {
     if [ -n "${MENU_PATH:-}" ]; then
       printf '%b\n' "${BLUE}${MENU_PATH}${RESET}"
     fi
-    printf '%b\n\n' "${BOLD}${GREEN}${_title}${RESET}"
+    _menu_banner "$_title"
 
     display_options "$@"
     display_additional_options

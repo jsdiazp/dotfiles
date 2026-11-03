@@ -141,6 +141,7 @@ unix_menu() {
       _script="$(unix_script_for "$MENU_CHOICE")"
       # execute_script already reported the failure; stay in the menu.
       execute_script "$_script" "$(task_interpreter)" || true
+      MENU_KEEP_SCREEN=1 # keep the task's summary: don't clear for the next menu
       return 0
       ;;
     3) return 3 ;; # EOF — unwind, do not loop.
@@ -159,6 +160,7 @@ server_menu() {
       _script="$(server_script_for "$MENU_CHOICE")"
       # execute_script already reported the failure; stay in the menu.
       execute_script "$_script" "$(task_interpreter)" || true
+      MENU_KEEP_SCREEN=1 # keep the task's summary: don't clear for the next menu
       return 0
       ;;
     3) return 3 ;; # EOF — unwind, do not loop.
