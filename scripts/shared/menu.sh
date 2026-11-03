@@ -75,6 +75,10 @@ MENU_USE_FZF="${MENU_USE_FZF:-auto}"
 MENU_FZF_THRESHOLD="${MENU_FZF_THRESHOLD:-4}"
 MENU_CLEAR="${MENU_CLEAR:-1}"
 
+# Scoping note: `display_menu` owns the loop state (`_count`, `_menu_line`,
+# `_input`, ...) as `local`s, so helpers below write the CALLER's variable
+# through `local`'s dynamic scope instead of leaking globals. Helpers only
+# declare `local` for variables they own exclusively.
 _handle_menu_exit() {
   printf '%b\n' "${BLUE}Happy coding!${RESET}"
   exit 0
@@ -82,6 +86,7 @@ _handle_menu_exit() {
 
 # _menu_default_valid <count> — true when MENU_DEFAULT names a real option.
 _menu_default_valid() {
+  local _def_num=0
   case "${MENU_DEFAULT:-}" in
     *[!0-9]* | "") return 1 ;;
   esac
@@ -90,7 +95,8 @@ _menu_default_valid() {
 }
 
 display_options() {
-  _i=1
+  local _i=1
+  local _opt=""
   for _opt in "$@"; do
     if _menu_default_valid "$#" && [ "$_i" -eq "$((10#$MENU_DEFAULT))" ]; then
       printf '%b\n' "${YELLOW}${_i}) ${_opt}${GREEN}  (default)${RESET}"
@@ -99,7 +105,6 @@ display_options() {
     fi
     _i=$((_i + 1))
   done
-  unset _i _opt
 }
 
 display_additional_options() {
@@ -111,8 +116,9 @@ display_additional_options() {
 
 # _menu_is_valid <raw> <count> — sets MENU_CHOICE/choice on success.
 _menu_is_valid() {
-  _raw="$1"
-  _count="$2"
+  local _raw="$1"
+  local _count="$2"
+  local _num=0
   case "$_raw" in
     [Qq])
       _handle_menu_exit
@@ -141,7 +147,6 @@ _menu_is_valid() {
       return 1
       ;;
   esac
-  unset _raw _count _num
 }
 
 # _menu_can_single_key <count> — single-keypress needs a TTY and <= 9 options
@@ -150,10 +155,12 @@ _menu_can_single_key() {
   [ "${MENU_SINGLE_KEY:-1}" = "1" ] && [ "$1" -le 9 ] && [ -t 0 ]
 }
 
-# _menu_read_line — read one line of menu input into _menu_line.
+# _menu_read_line — read one line of menu input into the caller's _menu_line.
 # Returns 0 with _menu_line set, or 3 on EOF (caller must unwind, not retry:
 # stdin is gone, so re-rendering would loop forever).
 _menu_read_line() {
+  local _menu_ch=""
+  local _menu_rest=""
   _menu_line=""
   if _menu_can_single_key "$_count"; then
     if [ -n "${ZSH_VERSION:-}" ]; then
@@ -167,7 +174,6 @@ _menu_read_line() {
         ;;
       *)
         printf '%s' "$_menu_ch"
-        _menu_rest=""
         # Drain anything already typed or pasted after the first char, so
         # "12" pasted at once still arrives as one line.
         if IFS= read -r -t 0 _menu_rest 2>/dev/null; then
@@ -179,7 +185,6 @@ _menu_read_line() {
         printf '\n'
         ;;
     esac
-    unset _menu_ch _menu_rest
     return 0
   fi
   IFS= read -r _menu_line 2>/dev/null || return 3
@@ -203,16 +208,18 @@ _menu_should_fzf() {
 # _menu_pick_fzf <title> <option>... — fuzzy-pick one option.
 # Sets MENU_CHOICE/choice (1-based). Returns 0 on pick, 1 on abort (Esc etc).
 _menu_pick_fzf() {
-  _fzf_title="$1"
+  local _fzf_title="$1"
+  local _fzf_i=1
+  local _fzf_list=""
+  local _fzf_opt=""
+  local _fzf_rc=0
+  local _fzf_sel=""
   shift
-  _fzf_i=1
-  _fzf_list=""
   for _fzf_opt in "$@"; do
     _fzf_list="${_fzf_list}${_fzf_i}	${_fzf_opt}
 "
     _fzf_i=$((_fzf_i + 1))
   done
-  _fzf_rc=0
   _fzf_sel="$(printf '%s' "$_fzf_list" | fzf --delimiter='	' --with-nth=2.. \
     --accept-nth=1 --reverse --height=40% --prompt="${_fzf_title}> " 2>/dev/null)" || _fzf_rc=$?
   if [ "$_fzf_rc" -ne 0 ] || [ -z "$_fzf_sel" ]; then
@@ -248,8 +255,8 @@ _menu_clear_screen() {
 
 # _menu_prompt <count> — "[1/2/b/q]: " with an Enter=default hint when set.
 _menu_prompt() {
-  _prompt="[1"
-  _n=2
+  local _prompt="[1"
+  local _n=2
   while [ "$_n" -le "$1" ]; do
     _prompt="${_prompt}/${_n}"
     _n=$((_n + 1))
@@ -259,11 +266,14 @@ _menu_prompt() {
     _prompt="${_prompt} (Enter=${MENU_DEFAULT})"
   fi
   printf '%s: ' "$_prompt"
-  unset _n _prompt
 }
 
 display_menu() {
-  _title="$1"
+  local _title="$1"
+  local _count=0
+  local _menu_first_render=1
+  local _menu_line=""
+  local _input=""
   shift
   _count=$#
   if [ "$_count" -eq 0 ]; then
@@ -279,7 +289,6 @@ display_menu() {
     return 1
   fi
 
-  _menu_first_render=1
   while true; do
     if [ "$_menu_first_render" -eq 1 ]; then
       _menu_first_render=0
