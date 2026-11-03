@@ -282,10 +282,31 @@ update_composer() {
   return "$_rc"
 }
 
-# Function to update Oh My Zsh (fixed `--unattendand` typo).
+# Function to update Oh My Zsh via upgrade.sh directly (`omz update` is for
+# interactive shells; `omz update --unattended` was removed upstream and now
+# errors — see lib/cli.zsh — so scripts must call upgrade.sh per the FAQ).
 update_ohmyzsh() {
-  have_cmd omz || return 2
-  run_updater "Updating Oh My Zsh" omz update --unattended
+  _omz_dir="${ZSH:-$HOME/.oh-my-zsh}"
+  _omz_upgrade="$_omz_dir/tools/upgrade.sh"
+  if [ ! -f "$_omz_upgrade" ]; then
+    info "Skipping Oh My Zsh update (not installed at $_omz_dir)."
+    unset _omz_dir _omz_upgrade
+    return 2
+  fi
+  if ! have_cmd zsh; then
+    unset _omz_dir _omz_upgrade
+    return 2
+  fi
+  if ! have_cmd git; then
+    unset _omz_dir _omz_upgrade
+    return 2
+  fi
+  _omz_rc=0
+  run_updater "Updating Oh My Zsh" env "ZSH=$_omz_dir" zsh -f "$_omz_upgrade" || _omz_rc=$?
+  unset _omz_dir _omz_upgrade
+  _omz_ret="$_omz_rc"
+  unset _omz_rc
+  return "$_omz_ret"
 }
 
 # Main function to execute all updates
