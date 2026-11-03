@@ -387,3 +387,16 @@ sed_inplace "s/x/y/" "$TEST_TMP/loop/a"
   assert_rc 1 "a symlink cycle is an error, not a hang"
   assert_contains "$OUT" "Too many levels of symbolic links"
 }
+
+# The title is drawn in a plain-ASCII frame sized to it (no wide glyphs, so it
+# cannot misalign), and selection still works.
+test_menu_title_is_drawn_in_an_ascii_frame() {
+  menu_probe "1"$'\n'
+  assert_rc 0
+  assert_contains "$OUT" "choice=[1]"
+  assert_contains "$OUT" "+---------------+" "top and bottom rule fit the title"
+  assert_contains "$OUT" "| Pick a target |" "title between the rules"
+  local widths
+  widths="$(printf '%s\n' "$OUT" | grep -E '^(\+-+\+|\| Pick a target \|)$' | awk '{print length($0)}' | sort -u)"
+  assert_eq "17" "$widths" "all three frame lines have the same width"
+}

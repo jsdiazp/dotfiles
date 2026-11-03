@@ -177,7 +177,7 @@ test_menu_runs_task_and_survives_failure() {
   assert_contains "$OUT" "ERROR: Script failed (exit 3)"
   assert_not_contains "$OUT" "Script executed successfully."
   # Back at the main menu exactly twice: initial render + after the failure.
-  assert_eq "2" "$(count_exact_lines "$OUT" "What do you want to do?")" \
+  assert_eq "2" "$(count_exact_lines "$OUT" "| What do you want to do? |")" \
     "the menu must re-render after a failed task"
   assert_contains "$OUT" "Happy coding!"
 
