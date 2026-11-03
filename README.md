@@ -83,7 +83,7 @@ the standalone `starship` binary, and uninstalls the `thefuck` pip package.
 | `DOTFILES_ASSUME_YES` | `1` makes `confirm` answer yes; same as `--yes`. |
 | `DOTFILES_NO_CLEAR` | Any non-empty value stops the menu from clearing the screen. |
 | `DOTFILES_NO_FZF` | Any non-empty value disables the optional fzf menu picker. |
-| `MENU_*` | `MENU_PATH`, `MENU_DEFAULT`, `MENU_SINGLE_KEY`, `MENU_USE_FZF`, `MENU_FZF_THRESHOLD` and `MENU_CLEAR` are per-call overrides for scripts that call `display_menu`; you rarely need them by hand. |
+| `MENU_*` | `MENU_PATH`, `MENU_DEFAULT`, `MENU_SINGLE_KEY`, `MENU_USE_FZF`, `MENU_FZF_THRESHOLD` and `MENU_CLEAR` are per-call overrides for scripts that call `display_menu`; you rarely need them by hand. `MENU_KEEP_SCREEN=1` is one-shot: the next menu does not clear, which is how a task's summary stays visible after `setup.sh` returns to the menu. |
 
 ## 🪟 Windows
 
