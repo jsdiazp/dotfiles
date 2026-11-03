@@ -636,11 +636,29 @@ fi
 
 # sed_inplace <sed-expr> <file> — portable in-place edit of one file with
 # one expression (`sed_inplace 's/a/b/' file`), hiding the -i difference.
+# A symlinked <file> (e.g. ~/.zshrc -> a dotfiles repo) is edited THROUGH the
+# link: BSD sed refuses to edit a symlink and GNU sed would replace it with a
+# regular file, detaching it from its source.
 sed_inplace() {
+  local _target="$2"
+  local _link=""
+  local _hops=0
+  while [ -L "$_target" ] && [ "$_hops" -lt 40 ]; do
+    _link="$(readlink "$_target")"
+    case "$_link" in
+      /*) _target="$_link" ;;
+      *) _target="$(dirname "$_target")/$_link" ;;
+    esac
+    _hops=$((_hops + 1))
+  done
+  if [ -L "$_target" ]; then
+    error "Too many levels of symbolic links: $2"
+    return 1
+  fi
   if [ "$_DOTFILES_SED_INPLACE_GNU" = "1" ]; then
-    sed -i "$1" "$2"
+    sed -i "$1" "$_target"
   else
-    sed -i '' "$1" "$2"
+    sed -i '' "$1" "$_target"
   fi
 }
 
