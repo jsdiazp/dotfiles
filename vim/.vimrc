@@ -1,3 +1,5 @@
+set encoding=utf-8 " Set the character encoding used in Vim
+
 " vim-plug
 
 " Install vim-plug if not found
@@ -38,7 +40,6 @@ set nocompatible " Disable vi compatibility
 set hidden " Hide the buffer when leaving it, keeping the changes
 set undofile " Save change history to a file
 set autoread " Automatically reread the file if changes are detected outside Vim and it has not been modified within Vim
-set encoding=utf-8 " Set the character encoding used in Vim
 set timeoutlen=500 " Set the time in milliseconds to wait to complete a key code or key sequence
 let g:mapleader = "\<Space>"
 
@@ -53,13 +54,13 @@ let g:mapleader = "\<Space>"
 
 " Interface
 syntax on " Highlight code
+set background=dark " Set a black background
 colorscheme catppuccin_mocha " Set color palette, recommended: catppuccin_mocha, habamax, pablo, slate, sorbet, wildcharm, and zaibatsu
 set termguicolors
 if !has('gui_running')
   set t_Co=256
 endif
 set confirm " Show a dialog asking for confirmation before operations that would normally fail, e.g., ':q' and ':e'
-set background=dark " Set a black background
 set mouse=a " Enable mouse usage
 set ttymouse=sgr
 set number " Show line numbers
