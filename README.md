@@ -18,7 +18,9 @@ each task is also a standalone bash script. The shell side targets **bash 3.2**
 | `scripts/servers/` | `ubuntu.sh` (wipe-and-reprovision) |
 | `scripts/windows/` | `shell.ps1`, `update.ps1`, `lib/Common.ps1` |
 | `setup.sh` | Interactive menu and CLI dispatcher |
-| `.github/workflows/lint.yml` | CI: `shellcheck` + `shfmt` |
+| `.github/workflows/ci.yml` | CI merge gate: lint, workflow lint, secret scan, tests |
+| `.github/scripts/install-tool.sh` | Installs the pinned, checksum-verified CI tools |
+| `tests/` | Dependency-free regression suite (`bash tests/run.sh`) |
 | `.shellcheckrc`, `.editorconfig` | Lint config and whitespace/format config (shfmt reads it) |
 
 ## 🚀 Installation
@@ -94,12 +96,35 @@ modules, Scoop and WinGet (all, or a subset via `-Only`) without prompting.
 
 ## 🧑‍💻 Development
 
-Lint exactly what CI lints:
+Run what CI runs:
 
 ```bash
-shellcheck -x setup.sh scripts/*/*.sh
-shfmt -d setup.sh scripts/*/*.sh
+shellcheck -x setup.sh scripts/*/*.sh .github/scripts/*.sh tests/*.sh tests/lib/*.sh
+shfmt -d setup.sh scripts/*/*.sh .github/scripts/*.sh tests/*.sh tests/lib/*.sh
+/bin/bash tests/run.sh              # whole suite, on macOS bash 3.2
+/bin/bash tests/run.sh test_update  # only tests whose file::name contains this
 ```
+
+### CI and the merge gate
+
+Every pull request runs `.github/workflows/ci.yml`: shellcheck + shfmt,
+`actionlint` on the workflows, a `gitleaks` secret scan over the full history,
+and the test suite on Ubuntu (bash 5) and macOS (bash 3.2). A final job named
+**`CI gate`** passes only if all of them did; it is the single status check the
+`main` ruleset requires, so adding or renaming jobs never touches the ruleset.
+
+- The tests never touch your real `$HOME` or a real package manager: each test
+  runs in a scrubbed `env -i` process with a scratch home and stub binaries
+  first on `PATH`. They pin the dangerous paths: `--yes` must not uninstall
+  Homebrew, `ubuntu.sh` runs nothing unless confirmed, `.zshrc`/`.zprofile` are
+  never deleted, failing tasks exit non-zero. Add a `tests/test_*.sh` file with
+  `test_*` functions (see `tests/lib/` for assertions and stubs).
+- CI tools (shellcheck, shfmt, actionlint, gitleaks) are pinned with SHA-256
+  digests in `.github/scripts/install-tool.sh`; bump a version and its digest
+  together. `actions/checkout` is pinned to a commit SHA and Dependabot
+  proposes updates.
+- Known gaps: the Windows `.ps1` scripts and `vim/.vimrc` (it downloads plugins
+  when run) are not executed by CI.
 
 Conventions used throughout the shell code:
 
