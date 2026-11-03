@@ -10,7 +10,8 @@
 #     Template-Method pipeline: `run_step "label" func args...`, with
 #     per-step timing, an animated spinner over captured output by default
 #     (streaming at debug/info), and an end-of-run summary table.
-#     `run_step_live` covers steps that prompt (capture would hide them).
+#     `run_step_live` covers steps that prompt (capture would hide them);
+#     `run_step_soft` covers best-effort steps that must never abort a run.
 #   - Idempotency primitives (`append_once`, `safe_link`, `backup_once`,
 #     `clone_or_update`) so re-runs never duplicate config or destroy data.
 #   - Adapter pattern for OS / package managers (`os_family`, `pkg_manager`).
@@ -25,6 +26,7 @@
 
 # Guard against double-sourcing (and against `set -u` when guard is unset).
 if [ "${DOTFILES_COMMON_SOURCED:-0}" = "1" ]; then
+  # shellcheck disable=SC2317 # `return` wins when sourced; `exit` is the executed-not-sourced fallback.
   return 0 2>/dev/null || exit 0
 fi
 DOTFILES_COMMON_SOURCED=1
@@ -77,9 +79,10 @@ fi
 # log <message> [before=true] [after=true] — timestamped magenta log line.
 # Empty messages print nothing (preserves old behavior callers rely on).
 log() {
-  _msg="${1:-}"
-  _before="${2:-true}"
-  _after="${3:-true}"
+  local _msg="${1:-}"
+  local _before="${2:-true}"
+  local _after="${3:-true}"
+  local _line=""
   if [ -n "$_msg" ]; then
     _line="${DOTFILES_MAGENTA}[$(date +"%Y-%m-%d %H:%M:%S")] ⚡️ ${_msg}${DOTFILES_RESET}"
     if [ "$_before" = "true" ]; then
@@ -90,7 +93,6 @@ log() {
       printf '\n'
     fi
   fi
-  unset _msg _before _after _line
 }
 
 # Log levels: debug < info < warn < error (DOTFILES_LOG_LEVEL, default warn).
@@ -119,10 +121,65 @@ error() {
   printf '%b\n' "${DOTFILES_RED}ERROR: $*${DOTFILES_RESET}" >&2
 }
 
+# _DOTFILES_STEP_LOGS — newline-separated list of active capture files,
+# outermost step first. Kept so a fatal failure can reach the real terminal
+# through every step level that is currently capturing (see die()).
+: "${_DOTFILES_STEP_LOGS:=}"
+
+# _step_log_push <file> — track one active capture file.
+_step_log_push() {
+  _DOTFILES_STEP_LOGS="${_DOTFILES_STEP_LOGS}${1}
+"
+}
+
+# _step_errfd_open — true when fd 4 (the pre-capture stderr) is open, i.e.
+# die() is running inside a captured step and can reach the real terminal.
+_step_errfd_open() {
+  { : >&4; } 2>/dev/null
+}
+
+# _step_dump_active_logs <fd> — print every active capture (outermost first)
+# and delete the files, then forget them. <fd> is 4 when we are inside a
+# capture, else 1 (plain stdout, the historic top-level behavior).
+_step_dump_active_logs() {
+  local _sd_fd="${1:-1}"
+  local _sd_log=""
+  [ -n "${_DOTFILES_STEP_LOGS:-}" ] || return 0
+  while IFS= read -r _sd_log; do
+    [ -n "$_sd_log" ] || continue
+    if [ -s "$_sd_log" ]; then
+      if [ "$_sd_fd" = "4" ]; then
+        printf '\n' >&4
+        cat "$_sd_log" >&4
+      else
+        printf '\n'
+        cat "$_sd_log"
+      fi
+    fi
+    rm -f "$_sd_log"
+  done <<EOF
+${_DOTFILES_STEP_LOGS}
+EOF
+  _DOTFILES_STEP_LOGS=""
+}
+
 # die <message> [code=1] — log to stderr and exit.
+# Stops a running spinner first (it must never outlive the shell). Inside a
+# captured step the captured output would otherwise be swallowed and the
+# message would land in the capture file, so every active capture is dumped
+# (outermost first) and the error printed on the REAL terminal (fd 4).
 die() {
-  _die_msg="${1:-fatal error}"
-  _die_code="${2:-1}"
+  local _die_msg="${1:-fatal error}"
+  local _die_code="${2:-1}"
+  _spinner_stop
+  if [ -n "${_DOTFILES_STEP_LOGS:-}" ]; then
+    if _step_errfd_open; then
+      _step_dump_active_logs 4
+      error "$_die_msg" 2>&4
+      exit "$_die_code"
+    fi
+    _step_dump_active_logs 1
+  fi
   error "$_die_msg"
   exit "$_die_code"
 }
@@ -147,23 +204,28 @@ _spin_enabled() {
 # Frames iterate as separate words (no substring ops: multibyte-safe).
 # Shares the caller's process group, so Ctrl-C takes it down with the step;
 # every caller must still _spinner_stop before printing the outcome.
+# The loop also dies with its shell (parent check each frame), so a fatal
+# exit can never leave an orphan frame printer behind.
 _spinner_start() {
-  _spinner_label="$1"
+  local _spinner_label="$1"
+  local _spinner_parent=$$ # captured before forking; `$$` survives the subshell
   (
     if [ -n "${DOTFILES_ASCII:-}" ]; then
+      # shellcheck disable=SC1003 # ASCII frame: the single-quoted backslash is intentional.
       set -- '|' '/' '-' '\'
     else
       set -- '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏'
     fi
     while true; do
       for _c in "$@"; do
+        kill -0 "$_spinner_parent" 2>/dev/null || exit 0
         printf '\r%b %s... ' "${DOTFILES_BLUE}${_c}${DOTFILES_RESET}" "$_spinner_label"
         sleep 0.15
       done
     done
   ) &
+  # Notification-only global by design: _spinner_stop needs it across calls.
   _spinner_pid=$!
-  unset _spinner_label
 }
 
 # _spinner_stop — kill the animation and clear its line (TTY-only caller).
@@ -177,6 +239,101 @@ _spinner_stop() {
   _spinner_pid=""
 }
 
+# _step_run <fatal|live|soft> <label> <command> [args...] — the one step core.
+# Quiet by default (warn/error): stdout+stderr are captured to a temp file
+# behind an animated spinner (TTY) or a static start line (pipes), and a
+# failure dumps the capture. Verbose (debug/info) streams output live
+# between start/finish lines; `live` mode always streams (prompting steps).
+# Records exactly one summary row and returns the command's status — except
+# `soft`, which never fails (0/2/other map to OK/SKIP/FAIL). A fatal failure
+# leaves its capture on the _DOTFILES_STEP_LOGS stack (and the temp file on
+# disk) for die() to dump on the real terminal, so nested steps never bury
+# their output in an outer capture file. Nested steps are safe: a step
+# function calling run_step again sees a non-TTY stdout, so the inner step
+# streams into the outer capture instead of starting a second spinner.
+_step_run() {
+  local _sr_mode="$1"
+  local _sr_label="$2"
+  shift 2
+  local _sr_stream=0
+  local _sr_log=""
+  local _sr_spin=0
+  local _sr_outer=0
+  local _sr_saved_logs="${_DOTFILES_STEP_LOGS:-}"
+  local _sr_tmp="" _sr_t0="" _sr_dur="" _sr_code=0
+
+  if [ "$_sr_mode" = "live" ] || ! _log_quiet; then
+    _sr_stream=1
+  fi
+  if [ "$_sr_stream" -eq 0 ]; then
+    if _sr_tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-step.XXXXXX" 2>/dev/null)"; then
+      _sr_log="$_sr_tmp"
+    fi
+    if _spin_enabled; then
+      _sr_spin=1
+      _spinner_start "$_sr_label"
+    else
+      printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_sr_label}...${DOTFILES_RESET}"
+    fi
+  else
+    printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_sr_label}...${DOTFILES_RESET}"
+  fi
+  _sr_t0=$(_now_s)
+  # `|| _sr_code=$?` keeps errexit off the step: the exit code is data here.
+  if [ -n "$_sr_log" ]; then
+    if [ -z "$_sr_saved_logs" ]; then
+      _sr_outer=1
+    fi
+    _step_log_push "$_sr_log"
+    # The outermost capture parks the real stderr on fd 4 for its whole
+    # subtree, so die() can report from any depth (nested levels inherit it).
+    if [ "$_sr_outer" -eq 1 ]; then
+      "$@" 4>&2 >"$_sr_log" 2>&1 || _sr_code=$?
+    else
+      "$@" >"$_sr_log" 2>&1 || _sr_code=$?
+    fi
+  else
+    "$@" || _sr_code=$?
+  fi
+  _sr_dur="$(_fmt_dur $(($(_now_s) - _sr_t0)))"
+  if [ "$_sr_spin" -eq 1 ]; then
+    _spinner_stop
+  fi
+  if [ "$_sr_code" -eq 0 ]; then
+    summary_record "$_sr_label" OK "$_sr_dur"
+    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_sr_label} (${_sr_dur})${DOTFILES_RESET}"
+    _DOTFILES_STEP_LOGS="$_sr_saved_logs"
+    if [ -n "$_sr_log" ]; then
+      rm -f "$_sr_log"
+    fi
+    return 0
+  fi
+  if [ "$_sr_code" -eq 2 ] && [ "$_sr_mode" = "soft" ]; then
+    summary_record "$_sr_label" SKIP
+    printf '%b\n' "${DOTFILES_YELLOW}${SYM_SKIP} ${_sr_label} (skipped)${DOTFILES_RESET}"
+    _DOTFILES_STEP_LOGS="$_sr_saved_logs"
+    if [ -n "$_sr_log" ]; then
+      rm -f "$_sr_log"
+    fi
+    return 0
+  fi
+  if [ "$_sr_mode" = "soft" ]; then
+    if [ -n "$_sr_log" ]; then
+      printf '\n'
+      cat "$_sr_log"
+      rm -f "$_sr_log"
+    fi
+    _DOTFILES_STEP_LOGS="$_sr_saved_logs"
+    summary_record "$_sr_label" FAIL "$_sr_dur"
+    printf '%b\n' "${DOTFILES_RED}${SYM_FAIL} ${_sr_label} (failed after ${_sr_dur})${DOTFILES_RESET}"
+    return 0
+  fi
+  # Fatal: keep the capture on the stack and the file on disk; die() dumps
+  # every active level on the real terminal and removes the files.
+  summary_record "$_sr_label" FAIL "$_sr_dur"
+  return "$_sr_code"
+}
+
 # run_step <label> <command> [args...] — Template-Method pipeline step.
 # Quiet by default (warn/error): output is captured behind an animated
 # spinner (TTY) or a static start line (pipes); failures dump the capture.
@@ -185,77 +342,41 @@ _spinner_stop() {
 # Interactive steps (prompts!) must use run_step_live instead: captured
 # output would hide their prompts while waiting on invisible input.
 run_step() {
-  _step_label="$1"
+  local _step_label="$1"
   shift
-  _step_quiet=0
-  _log_quiet || _step_quiet=1
-  _step_log=""
-  _step_spin=0
-  if [ "$_step_quiet" -eq 0 ]; then
-    _step_try=""
-    if _step_try="$(mktemp "${TMPDIR:-/tmp}/dotfiles-step.XXXXXX" 2>/dev/null)"; then
-      _step_log="$_step_try"
-    fi
-    unset _step_try
-    if _spin_enabled; then
-      _step_spin=1
-      _spinner_start "$_step_label"
-    else
-      printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_step_label}...${DOTFILES_RESET}"
-    fi
-  else
-    printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_step_label}...${DOTFILES_RESET}"
+  local _step_code=0
+  _step_run fatal "$_step_label" "$@" || _step_code=$?
+  if [ "$_step_code" -ne 0 ]; then
+    die "Step failed [${_step_code}]: ${_step_label}" "$_step_code"
   fi
-  _step_t0=$(_now_s)
-  _step_code=0
-  if [ -n "$_step_log" ]; then
-    "$@" >"$_step_log" 2>&1 || _step_code=$?
-  else
-    "$@" || _step_code=$?
-  fi
-  _step_dur="$(_fmt_dur $(($(_now_s) - _step_t0)))"
-  if [ "$_step_spin" -eq 1 ]; then
-    _spinner_stop
-  fi
-  if [ "$_step_code" -eq 0 ]; then
-    summary_record "$_step_label" OK "$_step_dur"
-    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_step_label} (${_step_dur})${DOTFILES_RESET}"
-    if [ -n "$_step_log" ]; then
-      rm -f "$_step_log"
-    fi
-    unset _step_label _step_quiet _step_log _step_spin
-    unset _step_t0 _step_code _step_dur
-    return 0
-  fi
-  summary_record "$_step_label" FAIL "$_step_dur"
-  if [ -n "$_step_log" ]; then
-    printf '\n'
-    cat "$_step_log"
-    rm -f "$_step_log"
-  fi
-  die "Step failed [${_step_code}]: ${_step_label}" "$_step_code"
+  return 0
 }
 
 # run_step_live <label> <command> [args...] — like run_step but always
 # streams output. REQUIRED for steps that prompt (confirm/read): capture
 # would hide their prompts while waiting on invisible input.
 run_step_live() {
-  _live_label="$1"
+  local _step_label="$1"
   shift
-  printf '%b\n' "${DOTFILES_BLUE}${SYM_STEP} ${_live_label}...${DOTFILES_RESET}"
-  _live_t0=$(_now_s)
-  if "$@"; then
-    _live_dur="$(_fmt_dur $(($(_now_s) - _live_t0)))"
-    summary_record "$_live_label" OK "$_live_dur"
-    printf '%b\n' "${DOTFILES_GREEN}${SYM_OK} ${_live_label} (${_live_dur})${DOTFILES_RESET}"
-    unset _live_label _live_t0 _live_dur
-    return 0
-  else
-    _live_code=$?
-    _live_dur="$(_fmt_dur $(($(_now_s) - _live_t0)))"
-    summary_record "$_live_label" FAIL "$_live_dur"
-    die "Step failed [${_live_code}]: ${_live_label}" "$_live_code"
+  local _step_code=0
+  _step_run live "$_step_label" "$@" || _step_code=$?
+  if [ "$_step_code" -ne 0 ]; then
+    die "Step failed [${_step_code}]: ${_step_label}" "$_step_code"
   fi
+  return 0
+}
+
+# run_step_soft <label> <command> [args...] — best-effort step: NEVER dies
+# and always returns 0. Exit 0 records OK, exit 2 records SKIP (yellow
+# "skipped" line), anything else records FAIL and dumps the capture.
+# Replaces per-script copies (update.sh's `timed`) so one failing ecosystem
+# never aborts a whole run; failure totals come from SUMMARY_FAILED.
+# The command itself must NOT call a fatal run_step or die(): die exits the
+# whole script by design, so soft only protects against the command's exit
+# code, never against a fatal failure raised inside it.
+run_step_soft() {
+  _step_run soft "$@" || true
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -272,27 +393,24 @@ _now_s() {
 
 # _fmt_dur <seconds> — "45s", "75s" -> "1m15s".
 _fmt_dur() {
-  _fd_s="$1"
+  local _fd_s="$1"
   if [ "$_fd_s" -ge 60 ]; then
     printf '%dm%ds' "$((_fd_s / 60))" "$((_fd_s % 60))"
   else
     printf '%ds' "$_fd_s"
   fi
-  unset _fd_s
 }
 
 # summary_record <label> <OK|FAIL|SKIP> [detail=-] — append one result row.
 summary_record() {
+  local _r_label _r_status="${2:-FAIL}" _r_detail="${3:--}"
   _r_label="$(printf '%s' "${1:-?}" | tr '|' '/')"
-  _r_status="${2:-FAIL}"
-  _r_detail="${3:--}"
   case "$_r_status" in
     OK | FAIL | SKIP) : ;;
     *) _r_status="FAIL" ;;
   esac
   DOTFILES_SUMMARY="${DOTFILES_SUMMARY}${_r_label}|${_r_status}|${_r_detail}
 "
-  unset _r_label _r_status _r_detail
 }
 
 # summary_reset — clear recorded rows (e.g. between menu-driven runs).
@@ -303,26 +421,36 @@ summary_reset() {
 # _pad_to_width <string> <width> — print string + trailing spaces.
 # Uses ${#} (character-based in bash and zsh), so UTF-8 symbols align.
 _pad_to_width() {
+  local _pad_n
   printf '%s' "$1"
   _pad_n=$(($2 - ${#1}))
   while [ "$_pad_n" -gt 0 ]; do
     printf ' '
     _pad_n=$((_pad_n - 1))
   done
-  unset _pad_n
 }
 
 # _status_cell <OK|FAIL|SKIP> — colored, width-padded status (needs $_ws).
+# $_ws is a local of print_summary, visible here through dynamic scoping.
 _status_cell() {
+  local _sc="" _sp=""
   case "$1" in
-    OK) _sc="$DOTFILES_GREEN"; _sp="${SYM_OK} OK" ;;
-    FAIL) _sc="$DOTFILES_RED"; _sp="${SYM_FAIL} FAIL" ;;
-    *) _sc="$DOTFILES_YELLOW"; _sp="${SYM_SKIP} SKIP" ;;
+    OK)
+      _sc="$DOTFILES_GREEN"
+      _sp="${SYM_OK} OK"
+      ;;
+    FAIL)
+      _sc="$DOTFILES_RED"
+      _sp="${SYM_FAIL} FAIL"
+      ;;
+    *)
+      _sc="$DOTFILES_YELLOW"
+      _sp="${SYM_SKIP} SKIP"
+      ;;
   esac
   printf '%b' "$_sc"
   _pad_to_width "$_sp" "$_ws"
   printf '%b' "$DOTFILES_RESET"
-  unset _sc _sp
 }
 
 # print_summary [title=Summary] — aligned results table with counts.
@@ -331,22 +459,20 @@ _status_cell() {
 # Statuses are colorized; padding is character-based (${#} in bash/zsh),
 # so UTF-8 symbols stay aligned without awk.
 print_summary() {
-  _sum_title="${1:-Summary}"
+  local _sum_title="${1:-Summary}"
+  local _wn=4 _ws=0 _wt=4 _t=0
+  local _c_ok=0 _c_fail=0 _c_skip=0
+  local _wr_n="" _wr_s="" _wr_t=""
+  local _sep_len=0 _sep="" _i=0
   if [ -z "${DOTFILES_SUMMARY:-}" ]; then
     info "No steps recorded."
-    unset _sum_title
     return 0
   fi
-  _wn=4
   _ws=$((4 + ${#SYM_OK}))
   _t=$((5 + ${#SYM_FAIL}))
   [ "$_t" -gt "$_ws" ] && _ws="$_t"
   _t=$((5 + ${#SYM_SKIP}))
   [ "$_t" -gt "$_ws" ] && _ws="$_t"
-  _wt=4
-  _c_ok=0
-  _c_fail=0
-  _c_skip=0
   while IFS='|' read -r _wr_n _wr_s _wr_t; do
     [ -n "$_wr_n" ] || continue
     [ "${#_wr_n}" -gt "$_wn" ] && _wn="${#_wr_n}"
@@ -360,8 +486,6 @@ print_summary() {
   _pad_to_width "STATUS" "$_ws"
   printf '  %s\n' "TIME"
   _sep_len=$((2 + _wn + 2 + _ws + 2 + _wt))
-  _sep=""
-  _i=0
   while [ "$_i" -lt "$_sep_len" ]; do
     _sep="${_sep}-"
     _i=$((_i + 1))
@@ -372,7 +496,10 @@ print_summary() {
     case "$_wr_s" in
       OK) _c_ok=$((_c_ok + 1)) ;;
       FAIL) _c_fail=$((_c_fail + 1)) ;;
-      *) _c_skip=$((_c_skip + 1)); _wr_s="SKIP" ;;
+      *)
+        _c_skip=$((_c_skip + 1))
+        _wr_s="SKIP"
+        ;;
     esac
     printf '  '
     _pad_to_width "$_wr_n" "$_wn"
@@ -385,8 +512,6 @@ print_summary() {
   SUMMARY_OK="$_c_ok"
   SUMMARY_FAILED="$_c_fail"
   SUMMARY_SKIPPED="$_c_skip"
-  unset _sum_title _wn _ws _wt _t _wr_n _wr_s _wr_t
-  unset _c_ok _c_fail _c_skip _sep_len _sep _i
 }
 
 # ---------------------------------------------------------------------------
@@ -404,6 +529,7 @@ require_cmd() {
 
 # os_family — prints one of: darwin | linux | wsl | unknown (never fails).
 os_family() {
+  local _kernel=""
   _kernel="$(uname -s 2>/dev/null || echo unknown)"
   case "$_kernel" in
     Darwin*) printf 'darwin\n' ;;
@@ -416,7 +542,6 @@ os_family() {
       ;;
     *) printf 'unknown\n' ;;
   esac
-  unset _kernel
 }
 
 # pkg_manager — prints one of: apt | dnf | yum | brew | none.
@@ -435,6 +560,7 @@ pkg_manager() {
 }
 
 # sudo_if_needed — prints "sudo" when euid != 0 and sudo exists, else "".
+# legacy: prefer as_root (no unquoted `$_sudo cmd` / SC2086 at call sites).
 sudo_if_needed() {
   if [ "$(id -u)" -eq 0 ]; then
     printf '\n'
@@ -445,19 +571,54 @@ sudo_if_needed() {
   fi
 }
 
-# confirm <prompt> [default=n] — returns 0 on yes. Reads from stdin.
+# as_root <command> [args...] — run a command as root: through sudo when
+# euid != 0 and sudo exists, directly otherwise. Lets callers write
+# `run_step "Updating apt" as_root apt-get update` instead of unquoted
+# `$_sudo apt-get update` (no arrays needed on bash 3.2 under `set -u`).
+as_root() {
+  if [ "$(id -u)" -ne 0 ] && have_cmd sudo; then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
+# sudo_warm — ask for the sudo password once, up front, before spinners
+# hide prompts. Silent no-op when already root, no sudo, not on a TTY, or
+# already warmed in this process. No background keep-alive loop: returns
+# sudo's non-zero status when `sudo -v` fails, so the caller decides.
+sudo_warm() {
+  [ -z "${_DOTFILES_SUDO_WARMED:-}" ] || return 0
+  [ "$(id -u)" -ne 0 ] || return 0
+  have_cmd sudo || return 0
+  [ -t 0 ] && [ -t 1 ] || return 0
+  sudo -v || return $?
+  _DOTFILES_SUDO_WARMED=1
+  return 0
+}
+
+# confirm <prompt> [default=n] [strict] — returns 0 on yes. Reads from stdin.
 # Accepts y/yes (any case). Portable: no `read -p` (unsupported in zsh).
+# DOTFILES_ASSUME_YES=1 answers yes automatically (unattended runs, --yes)
+# without touching stdin, EXCEPT when the third argument is `strict`: use that
+# for questions where yes means "destroy something not part of this task" so
+# a blanket --yes can never answer them (EOF/empty input then means the default).
 confirm() {
-  _prompt="${1:-Are you sure?}"
-  _default="${2:-n}"
+  local _prompt="${1:-Are you sure?}"
+  local _default="${2:-n}"
+  local _strict="${3:-}"
+  local _answer=""
+  if [ "${DOTFILES_ASSUME_YES:-}" = "1" ] && [ "$_strict" != "strict" ]; then
+    printf '%b\n' "${DOTFILES_GREEN}[auto-yes] ${_prompt}${DOTFILES_RESET}"
+    return 0
+  fi
   printf '%s [%s]: ' "$_prompt" "$_default"
-  _answer=""
   IFS= read -r _answer || true
   if [ -z "$_answer" ]; then
     _answer="$_default"
   fi
   case "$_answer" in
-    [Yy]|[Yy][Ee][Ss]) return 0 ;;
+    [Yy] | [Yy][Ee][Ss]) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -465,19 +626,61 @@ confirm() {
 # ---------------------------------------------------------------------------
 # Idempotency primitives
 # ---------------------------------------------------------------------------
+# GNU sed takes `-i`, BSD/macOS sed takes `-i ''` (empty backup suffix).
+# Detected once at source time because BSD sed rejects `--version`.
+if sed --version >/dev/null 2>&1; then
+  _DOTFILES_SED_INPLACE_GNU=1
+else
+  _DOTFILES_SED_INPLACE_GNU=0
+fi
+
+# sed_inplace <sed-expr> <file> — portable in-place edit of one file with
+# one expression (`sed_inplace 's/a/b/' file`), hiding the -i difference.
+# A symlinked <file> (e.g. ~/.zshrc -> a dotfiles repo) is edited THROUGH the
+# link: BSD sed refuses to edit a symlink and GNU sed would replace it with a
+# regular file, detaching it from its source.
+sed_inplace() {
+  local _target="$2"
+  local _link=""
+  local _hops=0
+  while [ -L "$_target" ] && [ "$_hops" -lt 40 ]; do
+    _link="$(readlink "$_target")"
+    case "$_link" in
+      /*) _target="$_link" ;;
+      *) _target="$(dirname "$_target")/$_link" ;;
+    esac
+    _hops=$((_hops + 1))
+  done
+  if [ -L "$_target" ]; then
+    error "Too many levels of symbolic links: $2"
+    return 1
+  fi
+  if [ "$_DOTFILES_SED_INPLACE_GNU" = "1" ]; then
+    sed -i "$1" "$_target"
+  else
+    sed -i '' "$1" "$_target"
+  fi
+}
+
 ensure_dir() {
   mkdir -p "$1"
 }
 
-# backup_once <file> — keeps `<file>.bak.<timestamp>` on first run only.
+# backup_once <file> — copies `<file>` to `<file>.bak.<timestamp>`.
+# NOTE: despite the name it runs on EVERY call (a fresh timestamped copy
+# each time), not "first run only". Returns non-zero when the copy fails.
 backup_once() {
-  _target="$1"
+  local _target="$1"
+  local _backup=""
   if [ -e "$_target" ] || [ -L "$_target" ]; then
     _backup="${_target}.bak.$(date +%Y%m%d%H%M%S)"
-    cp -a "$_target" "$_backup"
+    if ! cp -a "$_target" "$_backup"; then
+      error "Backup failed: $_target -> $_backup"
+      return 1
+    fi
     info "Backup: $_target -> $_backup"
   fi
-  unset _target _backup
+  return 0
 }
 
 # append_once <file> <marker> <content...> — appends a marked block once.
@@ -485,8 +688,10 @@ backup_once() {
 # are no-ops. Replaces raw `echo "..." >> ~/.zshrc` (which duplicated
 # fzf/starship/zoxide blocks on every run).
 append_once() {
-  _file="$1"
-  _marker="$2"
+  local _file="$1"
+  local _marker="$2"
+  local _begin=""
+  local _end=""
   shift 2
   _begin="# >>> dotfiles:${_marker} >>>"
   _end="# <<< dotfiles:${_marker} <<<"
@@ -500,14 +705,15 @@ append_once() {
     printf '%s\n' "$*"
     printf '%s\n' "$_end"
   } >>"$_file"
-  unset _file _marker _begin _end
 }
 
 # safe_link <source> <dest> — idempotent symlink (mkdir -p + ln -sfn).
-# Never `rm -rf`s the destination tree; only replaces file/symlink at dest.
+# Never `rm -rf`s the destination tree; only replaces file/symlink at dest,
+# and only after backup_once succeeded (a failed backup leaves dest intact,
+# which matters because callers often run with `|| true` and errexit off).
 safe_link() {
-  _src="$1"
-  _dst="$2"
+  local _src="$1"
+  local _dst="$2"
   if [ ! -e "$_src" ] && [ ! -L "$_src" ]; then
     die "safe_link source does not exist: $_src"
   fi
@@ -516,60 +722,47 @@ safe_link() {
     return 0
   fi
   if [ -e "$_dst" ] || [ -L "$_dst" ]; then
-    backup_once "$_dst"
+    if ! backup_once "$_dst"; then
+      error "safe_link: refusing to replace $_dst (backup failed)"
+      return 1
+    fi
     rm -rf "$_dst"
   fi
   ln -sfn "$_src" "$_dst"
-  unset _src _dst
 }
 
 # clone_or_update <repo-url> <dest-dir> — idempotent git clone/pull.
 clone_or_update() {
-  _repo="$1"
-  _dest="$2"
+  local _repo="$1"
+  local _dest="$2"
   require_cmd git
   if [ -d "${_dest}/.git" ]; then
     git -C "$_dest" pull --ff-only
   elif [ -e "$_dest" ] || [ -L "$_dest" ]; then
-    backup_once "$_dest"
+    if ! backup_once "$_dest"; then
+      error "clone_or_update: refusing to replace $_dest (backup failed)"
+      return 1
+    fi
     rm -rf "$_dest"
     git clone "$_repo" "$_dest"
   else
     ensure_dir "$(dirname "$_dest")"
     git clone "$_repo" "$_dest"
   fi
-  unset _repo _dest
-}
-
-# portable_script_dir — best-effort `dirname $0` resolver without `readlink -f`
-# (which does not exist on macOS). Callers prefer this over `$PWD`.
-portable_script_dir() {
-  _src="$0"
-  # Resolve one level of symlink chain with plain `readlink` when available.
-  while [ -L "$_src" ] && have_cmd readlink; do
-    _link="$(readlink "$_src")"
-    case "$_link" in
-      /*) _src="$_link" ;;
-      *) _src="$(dirname "$_src")/$_link" ;;
-    esac
-  done
-  (cd "$(dirname "$_src")" && pwd)
-  unset _src _link
 }
 
 # repo_root_from <script-dir> — assumes layout <root>/scripts/... .
 repo_root_from() {
-  _here="$1"
+  local _here="$1"
+  local _root=""
   case "$_here" in
-    */scripts/shared|*/scripts/unix|*/scripts/windows|*/scripts/servers)
+    */scripts/shared | */scripts/unix | */scripts/windows | */scripts/servers)
       if _root="$(cd "$_here/../.." 2>/dev/null && pwd)"; then
         printf '%s\n' "$_root"
       else
         printf '%s\n' "${_here%/scripts/*}"
       fi
-      unset _root
       ;;
     *) (cd "$_here/.." 2>/dev/null && pwd) ;;
   esac
-  unset _here
 }

@@ -10,10 +10,11 @@
 #   - Shared behavior (colors, logging, menu) is sourced from
 #     scripts/shared/* — no duplicated menu code.
 #
-# Portable: bash >= 3.2 and zsh. macOS `readlink -f` is NOT used.
+# Portable: bash >= 3.2. macOS `readlink -f` is NOT used.
 
 # Usage: setup.sh [--unix docker|shell|swap|update|N] [--server ubuntu|N]
-#                [-v|--verbose] [--debug] [-q|--quiet] [--list] [-h|--help]
+#                [-v|--verbose] [--debug] [-q|--quiet] [-y|--yes]
+#                [--list] [-h|--help]
 # Without a task flag, the interactive menu is shown. display_menu codes:
 # 0 = selected, 1 = back, 3 = EOF (input gone) — 3 unwinds to a farewell.
 
@@ -21,7 +22,7 @@ set -euo pipefail
 
 # Portable script dir (no GNU `readlink -f`, which is missing on macOS).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Captured once: inside functions $0 is the function name under zsh.
+# Captured once so every function sees the same script name.
 SCRIPT_NAME="$(basename "$0")"
 
 # shellcheck disable=SC1091
@@ -78,11 +79,13 @@ Options:
   -v, --verbose    Detailed output (info level), inherited by task scripts
   --debug          Debug output, inherited by task scripts
   -q, --quiet      Errors only
+  -y, --yes        Assume "yes" for every prompt (unattended); exported to
+                   task scripts as DOTFILES_ASSUME_YES=1
   --list           List available tasks and exit
   -h, --help       Show this help and exit
 
 Without a task option, the interactive menu is shown.
-Verbosity flags may come before or after the task option and combine with it.
+Verbosity and --yes flags may come before or after the task option.
 EOF
 }
 
@@ -93,10 +96,13 @@ print_tasks() {
   printf '  1) ubuntu\n'
 }
 
-# Execute the chosen script if it exists.
+# Execute the chosen script if it exists. Returns the script's own status and
+# is the single place that announces success: a failed task never prints the
+# success banner, it reports one `error` line instead.
 execute_script() {
-  _script="$1"
-  _interpreter="${2:-bash}"
+  local _script="$1"
+  local _interpreter="${2:-bash}"
+  local _code=0
   if [ ! -f "$_script" ]; then
     error "Script not found: $_script"
     return 1
@@ -105,30 +111,35 @@ execute_script() {
     error "Interpreter not found: $_interpreter (needed for $_script)"
     return 1
   fi
-  "$_interpreter" "$_script"
+  # `|| _code=$?` keeps errexit off the child: its status is data here.
+  "$_interpreter" "$_script" || _code=$?
+  if [ "$_code" -ne 0 ]; then
+    error "Script failed (exit $_code): $_script"
+    return "$_code"
+  fi
   printf '\n%b\n\n' "${BLUE}Script executed successfully.${RESET}"
-  unset _script _interpreter
+  return 0
 }
 
-# Preferred interpreter for task scripts: zsh when present (scripts target
-# zsh), otherwise bash. Centralizes the old hardcoded `zsh` argument.
+# Interpreter for task scripts: always bash. Every task script carries a
+# `#!/usr/bin/env bash` shebang and relies on bash word-splitting of unquoted
+# expansions, which zsh does not do ($T with T="a b c" is one word in zsh).
+# Single seam used by unix_menu, server_menu and dispatch_cli.
 task_interpreter() {
-  if command -v zsh >/dev/null 2>&1; then
-    printf 'zsh\n'
-  else
-    printf 'bash\n'
-  fi
+  printf 'bash\n'
 }
 
 unix_menu() {
+  local _rc=0
+  local _script=""
   MENU_PATH="Main > UNIX-based OS"
-  _rc=0
   display_menu "What do you want to do in your UNIX-based OS?" \
     "Setup Docker" "Setup shell" "Setup swap" "Update OS" || _rc=$?
   MENU_PATH=""
   case "$_rc" in
     0)
       _script="$(unix_script_for "$MENU_CHOICE")"
+      # execute_script already reported the failure; stay in the menu.
       execute_script "$_script" "$(task_interpreter)" || true
       return 0
       ;;
@@ -138,13 +149,15 @@ unix_menu() {
 }
 
 server_menu() {
+  local _rc=0
+  local _script=""
   MENU_PATH="Main > Server"
-  _rc=0
   display_menu "What server OS do you want to set up?" "Ubuntu" || _rc=$?
   MENU_PATH=""
   case "$_rc" in
     0)
       _script="$(server_script_for "$MENU_CHOICE")"
+      # execute_script already reported the failure; stay in the menu.
       execute_script "$_script" "$(task_interpreter)" || true
       return 0
       ;;
@@ -154,7 +167,7 @@ server_menu() {
 }
 
 main_menu() {
-  _rc=0
+  local _rc=0
   display_menu "What do you want to do?" \
     "Setup UNIX-based OS" "Setup server" || _rc=$?
   case "$_rc" in
@@ -170,39 +183,48 @@ main_menu() {
 }
 
 # resolve_verbosity — first pass over CLI args; CLI flags win over the
-# environment. The result is EXPORTED so task subprocesses spawned by
-# execute_script inherit it (export is what crosses the process boundary).
+# environment. The results are EXPORTED so task subprocesses spawned by
+# execute_script inherit them (export is what crosses the process boundary).
 resolve_verbosity() {
+  local _arg=""
   for _arg in "$@"; do
     case "$_arg" in
       -v | --verbose) DOTFILES_LOG_LEVEL="info" ;;
       --debug) DOTFILES_LOG_LEVEL="debug" ;;
       -q | --quiet) DOTFILES_LOG_LEVEL="error" ;;
+      -y | --yes) DOTFILES_ASSUME_YES="1" ;;
     esac
   done
   export DOTFILES_LOG_LEVEL="${DOTFILES_LOG_LEVEL:-warn}"
-  unset _arg
+  if [ "${DOTFILES_ASSUME_YES:-}" = "1" ]; then
+    export DOTFILES_ASSUME_YES
+  fi
 }
 
 # Dispatch CLI flags. Returns 0 when the caller should continue to the
 # interactive menu, otherwise exits the script directly.
 dispatch_cli() {
+  local _cmd=""
+  local _cmd_arg=""
+  local _num=""
+  local _want_help=0
+  local _want_list=0
   if [ "$#" -eq 0 ]; then
     return 0
   fi
-  _cmd=""
-  _cmd_arg=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -h | --help)
-        print_usage
-        exit 0
+        _want_help=1
+        shift
         ;;
       --list)
-        print_tasks
-        exit 0
+        _want_list=1
+        shift
         ;;
-      -v | --verbose | --debug | -q | --quiet)
+      # Verbosity and --yes are consumed by resolve_verbosity's first pass;
+      # they are accepted here so they may appear before or after the task.
+      -v | --verbose | --debug | -q | --quiet | -y | --yes)
         shift
         ;;
       --unix | --server)
@@ -217,6 +239,17 @@ dispatch_cli() {
         ;;
     esac
   done
+  # Informational flags win, but only once the whole line parsed: a trailing
+  # unknown option must still fail instead of exiting 0 mid-parse
+  # (`--list --bogus`).
+  if [ "$_want_help" -eq 1 ]; then
+    print_usage
+    exit 0
+  fi
+  if [ "$_want_list" -eq 1 ]; then
+    print_tasks
+    exit 0
+  fi
   if [ -z "$_cmd" ]; then
     return 0 # Flags only (e.g. bare --verbose) — show the interactive menu.
   fi
@@ -235,6 +268,7 @@ dispatch_cli() {
 }
 
 main() {
+  local _rc=0
   resolve_verbosity "$@"
   dispatch_cli "$@"
   while true; do

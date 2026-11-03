@@ -1,0 +1,55 @@
+# EditorConfig — https://editorconfig.org
+#
+# Single source of truth for whitespace. shfmt reads this file as well
+# (indent_style / indent_size / switch_case_indent), so `shfmt -d` in CI and
+# on a laptop enforce exactly what editors do — no separate flags to keep in
+# sync.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Shell scripts (setup.sh, scripts/**/*.sh): formatted by shfmt.
+# switch_case_indent = true matches the existing style (case patterns are
+# indented one level inside `case`) and is the setting that makes `shfmt -d`
+# smallest on the current scripts (e.g. setup.sh 209 -> 0 diff lines,
+# menu.sh 124 -> 0). binary_next_line is intentionally left at its default
+# (false): enabling it rewrites every `cmd || \` continuation and grows the
+# diff (ubuntu.sh 35 -> 42 lines).
+[*.sh]
+indent_style = space
+indent_size = 2
+switch_case_indent = true
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.toml]
+indent_style = space
+indent_size = 2
+
+[*.vim]
+indent_style = space
+indent_size = 2
+
+# tmux/tmux.conf (no extension).
+[tmux.conf]
+indent_style = space
+indent_size = 2
+
+# PowerShell: repo convention is 2 spaces. end_of_line is unset (not
+# "crlf") so files keep whichever line ending they already have — Windows
+# tooling writes CRLF, and this config must not force a rewrite either way.
+[*.ps1]
+indent_style = space
+indent_size = 2
+end_of_line = unset

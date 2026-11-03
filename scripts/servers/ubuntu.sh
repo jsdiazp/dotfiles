@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # ubuntu.sh — provision an Ubuntu server (users: ubuntu, root).
 #
+# This is a DELIBERATE wipe-and-reprovision script: it removes packages and
+# per-user shell state before rebuilding them. main() therefore lists exactly
+# what it destroys and asks for confirmation before the first mutating step;
+# `-y|--yes` (or DOTFILES_ASSUME_YES=1) skips the prompt for unattended runs.
+#
 # Refactor notes:
 #   - main() is a Template-Method pipeline of run_step stages; every stage
 #     is a small function with one responsibility.
@@ -8,7 +13,7 @@
 #     ZSH_PLUGINS lists replace inline literals.
 #   - All per-user state is passed explicitly (user, home) — no more global
 #     $home/$zsh_custom mutation across functions.
-#   - Idempotency: zshrc_block_once() wraps append_once (no duplicate blocks),
+#   - Idempotency: user_zshrc_block() wraps append_once (no duplicate blocks),
 #     symlinks use safe_link anchored at the repo root (not $PWD), fstab-style
 #     appends are grep-guarded, clones pull when already present.
 #   - Bug fixes vs the original: sudo on the unattended-upgrades sed,
@@ -39,58 +44,90 @@ TARGET_USERS="ubuntu root"
 BREW_FOLDER="/home/linuxbrew"
 
 # ---------------------------------------------------------------------------
+# Consent gate — nothing below main()'s gate may run before the user agrees.
+# ---------------------------------------------------------------------------
+usage() {
+  printf 'Usage: %s [-y|--yes]\n' "$(basename "$0")"
+}
+
+parse_args() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -y | --yes) DOTFILES_ASSUME_YES=1 ;;
+      *)
+        usage >&2
+        die "Unknown argument: $arg"
+        ;;
+    esac
+  done
+}
+
+# confirm_destruction — list everything this run resets, then require consent.
+confirm_destruction() {
+  local user
+  printf '\n%b\n' "${BOLD}This script wipes and re-provisions this machine. It will:${RESET}"
+  printf '  - remove apt packages: %s\n' "$APT_PURGE"
+  # shellcheck disable=SC2086
+  for user in $TARGET_USERS; do
+    printf '  - reset %s: ~/.oh-my-zsh ~/.zshrc ~/.zprofile ~/.nvm ~/.nix-*\n' "$user"
+  done
+  printf '%s\n' \
+    '  - remove /nix and the nixbld build users/groups' \
+    "  - remove $BREW_FOLDER (Linuxbrew)" \
+    '  - remove the starship binary (unless installed by Nix)' \
+    '  - uninstall the thefuck pip package'
+  printf '\n'
+  if ! confirm "Continue?" n; then
+    printf '%s\n' "Aborted, nothing changed."
+    exit 0
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Small helpers (explicit args, no globals)
 # ---------------------------------------------------------------------------
 user_home() {
-  _user="$1"
-  if command -v getent >/dev/null 2>&1; then
-    getent passwd "$_user" | cut -d: -f6
-  else
-    # shellcheck disable=SC2086
-    eval echo ~$_user
-  fi
-  unset _user
+  local user home
+  user="$1"
+  require_cmd getent
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  printf '%s\n' "$home"
 }
 
 as_user() {
-  _au_user="$1"
+  local user
+  user="$1"
   shift
-  if [ "$(id -un)" = "$_au_user" ]; then
+  if [ "$(id -un)" = "$user" ]; then
     bash -c "$*"
   else
-    su - "$_au_user" -c "$*"
+    su - "$user" -c "$*"
   fi
-  unset _au_user
 }
 
-# Idempotent marked block in a user's .zshrc.
+# Idempotent marked block in a user's .zshrc. Thin wrapper over append_once;
+# the body keeps the old `# <comment>` + code shape, so blocks written by the
+# previous implementation are still detected by their marker.
 user_zshrc_block() {
-  _uzb_user="$1"
-  _uzb_home="$2"
-  _uzb_id="$3"
-  _uzb_comment="$4"
-  _uzb_code="$5"
-  ensure_dir "$_uzb_home"
-  [ -e "$_uzb_home/.zshrc" ] || : >"$_uzb_home/.zshrc"
-  if ! grep -qF "# >>> dotfiles:${_uzb_id} >>>" "$_uzb_home/.zshrc" 2>/dev/null; then
-    {
-      printf '\n# >>> dotfiles:%s >>>\n# %s\n%s\n# <<< dotfiles:%s <<<\n' \
-        "$_uzb_id" "$_uzb_comment" "$_uzb_code" "$_uzb_id"
-    } >>"$_uzb_home/.zshrc"
-  fi
-  unset _uzb_user _uzb_home _uzb_id _uzb_comment _uzb_code
+  local home id comment code
+  home="$1"
+  id="$2"
+  comment="$3"
+  code="$4"
+  append_once "$home/.zshrc" "$id" "$(printf '# %s\n%s' "$comment" "$code")"
 }
 
 user_activate_plugins() {
-  _uap_home="$1"
+  local home plugins
+  home="$1"
   shift
-  _uap_plugins="$*"
-  if grep -q '^plugins=' "$_uap_home/.zshrc" 2>/dev/null; then
-    sed -i "s/^plugins=.*/plugins=(${_uap_plugins})/" "$_uap_home/.zshrc"
+  plugins="$*"
+  if grep -q '^plugins=' "$home/.zshrc" 2>/dev/null; then
+    sed -i "s/^plugins=.*/plugins=(${plugins})/" "$home/.zshrc"
   else
-    printf '\nplugins=(%s)\n' "$_uap_plugins" >>"$_uap_home/.zshrc"
+    printf '\nplugins=(%s)\n' "$plugins" >>"$home/.zshrc"
   fi
-  unset _uap_home _uap_plugins
 }
 
 # ---------------------------------------------------------------------------
@@ -118,7 +155,7 @@ setup_unattended_upgrades() {
   run_step "Installing unattended-upgrades" sudo apt-get install -y unattended-upgrades
   # NOTE: sudo was missing on this sed in the original (Permission denied).
   sudo sed -i 's/\/\/Unattended-Upgrade::Automatic-Reboot "false";/Unattended-Upgrade::Automatic-Reboot "true";/' \
-    /etc/apt/apt.conf.d/50unattended-upgrades || \
+    /etc/apt/apt.conf.d/50unattended-upgrades ||
     warn "Could not enable automatic reboot; continuing."
   sudo systemctl restart unattended-upgrades.service || true
 }
@@ -136,7 +173,8 @@ clean_brew() {
 }
 
 setup_brew() {
-  _brew_bin="$BREW_FOLDER/.linuxbrew/bin/brew"
+  local brew_bin
+  brew_bin="$BREW_FOLDER/.linuxbrew/bin/brew"
 
   clean_brew
 
@@ -157,38 +195,37 @@ setup_brew() {
   # needed for `update`, which avoids nested-quote breakage inside su -c.
   # Fail-fast like every other run_step here (no dead `|| warn`: run_step
   # exits on failure, so trailing guards would never run).
-  run_step "Updating Homebrew" sudo -u ubuntu "$_brew_bin" update
-  unset _brew_bin
+  run_step "Updating Homebrew" sudo -u ubuntu "$brew_bin" update
 }
 
 clean_nix() {
+  local i f
   sudo systemctl stop nix-daemon.service 2>/dev/null || true
   sudo systemctl disable nix-daemon.socket nix-daemon.service 2>/dev/null || true
   sudo systemctl daemon-reload 2>/dev/null || true
   sudo rm -rf /etc/nix /etc/profile.d/nix.sh /etc/tmpfiles.d/nix-daemon.conf /nix || true
-  _i=1
-  while [ "$_i" -le 32 ]; do
-    sudo userdel "nixbld$_i" 2>/dev/null || true
-    _i=$((_i + 1))
+  i=1
+  while [ "$i" -le 32 ]; do
+    sudo userdel "nixbld$i" 2>/dev/null || true
+    i=$((i + 1))
   done
   sudo groupdel nixbld 2>/dev/null || true
-  for _f in /etc/zsh/zshrc.backup-before-nix /etc/zshrc.backup-before-nix /etc/bash.bashrc.backup-before-nix /etc/bashrc.backup-before-nix; do
-    if [ -e "$_f" ]; then
-      sudo mv "$_f" "${_f%.backup-before-nix}"
+  for f in /etc/zsh/zshrc.backup-before-nix /etc/zshrc.backup-before-nix /etc/bash.bashrc.backup-before-nix /etc/bashrc.backup-before-nix; do
+    if [ -e "$f" ]; then
+      sudo mv "$f" "${f%.backup-before-nix}"
     fi
   done
-  unset _i _f
 }
 
 clean_nix_by_user() {
-  _user="$1"
-  _home="$(user_home "$_user")"
-  for _d in "$_home/.nix-channels" "$_home/.nix-defexpr" "$_home/.nix-profile"; do
-    if [ -d "$_d" ]; then
-      rm -rf "$_d"
+  local user home d
+  user="$1"
+  home="$(user_home "$user")"
+  for d in "$home/.nix-channels" "$home/.nix-defexpr" "$home/.nix-profile"; do
+    if [ -d "$d" ]; then
+      rm -rf "$d"
     fi
   done
-  unset _user _home _d
 }
 
 setup_nix() {
@@ -204,136 +241,143 @@ setup_nix() {
 # Per-user shell provisioning (decomposed from one 120-line function)
 # ---------------------------------------------------------------------------
 reset_user_shell_state() {
-  _rst_user="$1"
-  _rst_home="$2"
-  for _rst_f in "$_rst_home/.oh-my-zsh" "$_rst_home/.zshrc" "$_rst_home/.zprofile" "$_rst_home/.nvm"; do
-    if [ -e "$_rst_f" ] || [ -L "$_rst_f" ]; then
-      rm -rf "$_rst_f"
+  local user home f starship
+  user="$1"
+  home="$2"
+  for f in "$home/.oh-my-zsh" "$home/.zshrc" "$home/.zprofile" "$home/.nvm"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then
+      rm -rf "$f"
     fi
   done
   if have_cmd pip3; then
-    sudo -H -u "$_rst_user" pip3 uninstall -y thefuck 2>/dev/null || true
+    sudo -H -u "$user" pip3 uninstall -y thefuck 2>/dev/null || true
   fi
-  _rst_starship="$(command -v starship 2>/dev/null || true)"
-  if [ -n "$_rst_starship" ]; then
-    case "$_rst_starship" in
+  starship="$(command -v starship 2>/dev/null || true)"
+  if [ -n "$starship" ]; then
+    case "$starship" in
       *nix*) : ;;
-      *) rm -f "$_rst_starship" || sudo rm -f "$_rst_starship" || true ;;
+      *) rm -f "$starship" || sudo rm -f "$starship" || true ;;
     esac
   fi
-  unset _rst_user _rst_home _rst_f _rst_starship
 }
 
 install_user_nix_packages() {
-  _inp_user="$1"
+  local user
+  user="$1"
   # shellcheck disable=SC2086
-  as_user "$_inp_user" "nix-env -iA $NIX_PACKAGES" || warn "nix-env install failed for $_inp_user; continuing."
-  unset _inp_user
+  as_user "$user" "nix-env -iA $NIX_PACKAGES" || warn "nix-env install failed for $user; continuing."
 }
 
 install_user_oh_my_zsh() {
-  _ioz_home="$1"
-  if [ ! -d "$_ioz_home/.oh-my-zsh/.git" ]; then
-    rm -rf "$_ioz_home/.oh-my-zsh"
-    git clone https://github.com/robbyrussell/oh-my-zsh.git "$_ioz_home/.oh-my-zsh"
+  local home
+  home="$1"
+  if [ ! -d "$home/.oh-my-zsh/.git" ]; then
+    rm -rf "$home/.oh-my-zsh"
+    git clone https://github.com/ohmyzsh/ohmyzsh.git "$home/.oh-my-zsh"
   fi
-  if [ ! -f "$_ioz_home/.zshrc" ]; then
-    cp "$_ioz_home/.oh-my-zsh/templates/zshrc.zsh-template" "$_ioz_home/.zshrc"
+  if [ ! -f "$home/.zshrc" ]; then
+    cp "$home/.oh-my-zsh/templates/zshrc.zsh-template" "$home/.zshrc"
   fi
-  unset _ioz_home
 }
 
 install_user_zsh_plugin() {
-  _izp_home="$1"
-  _izp_repo="$2"
-  _izp_dest="$_izp_home/.oh-my-zsh/custom/plugins/$(basename "$_izp_repo")"
-  if [ ! -d "$_izp_dest/.git" ]; then
-    rm -rf "$_izp_dest"
-    git clone "https://github.com/${_izp_repo}.git" "$_izp_dest"
+  local home repo dest
+  home="$1"
+  repo="$2"
+  dest="$home/.oh-my-zsh/custom/plugins/$(basename "$repo")"
+  if [ ! -d "$dest/.git" ]; then
+    rm -rf "$dest"
+    git clone "https://github.com/${repo}.git" "$dest"
   fi
-  unset _izp_home _izp_repo _izp_dest
 }
 
 configure_user_locales() {
-  _loc_home="$1"
-  if grep -q '^# export LANG=' "$_loc_home/.zshrc" 2>/dev/null; then
-    sed -i 's/^# export LANG=en_US.UTF-8/export LANG=en_US.UTF-8/' "$_loc_home/.zshrc"
+  local home
+  home="$1"
+  if grep -q '^# export LANG=' "$home/.zshrc" 2>/dev/null; then
+    sed -i 's/^# export LANG=en_US.UTF-8/export LANG=en_US.UTF-8/' "$home/.zshrc"
   fi
-  user_zshrc_block "$(basename "$_loc_home")" "$_loc_home" "locale" "Locale" "export LC_ALL=en_US.UTF-8"
-  user_zshrc_block "$(basename "$_loc_home")" "$_loc_home" "nix-locale" "Nix Locale" "export LOCALE_ARCHIVE=/usr/lib/locale/locale-archive"
-  unset _loc_home
+  user_zshrc_block "$home" "locale" "Locale" "export LC_ALL=en_US.UTF-8"
+  user_zshrc_block "$home" "nix-locale" "Nix Locale" "export LOCALE_ARCHIVE=/usr/lib/locale/locale-archive"
 }
 
 configure_user_configs() {
-  _user="$1"
-  _home="$2"
+  local user home
+  user="$1"
+  home="$2"
 
-  as_user "$_user" "mkdir -p \"$_home/.config\""
+  as_user "$user" "mkdir -p \"$home/.config\""
 
-  if [ -e "$_home/.config/btop" ] || [ -L "$_home/.config/btop" ]; then
-    rm -rf "$_home/.config/btop"
+  if [ -e "$home/.config/btop" ] || [ -L "$home/.config/btop" ]; then
+    rm -rf "$home/.config/btop"
   fi
-  sudo -u "$_user" ln -sfn "$DOTFILES_ROOT/btop" "$_home/.config/btop"
+  sudo -u "$user" ln -sfn "$DOTFILES_ROOT/btop" "$home/.config/btop"
 
-  user_zshrc_block "$_user" "$_home" "fzf" "fzf" "source <(fzf --zsh)"
+  user_zshrc_block "$home" "fzf" "fzf" "source <(fzf --zsh)"
 
-  as_user "$_user" "mkdir -p \"$_home/.config/lazydocker\""
-  if ! grep -q 'dockerCompose: docker compose' "$_home/.config/lazydocker/config.yml" 2>/dev/null; then
-    printf '%s\n' 'commandTemplates:' '  dockerCompose: docker compose' | tee -a "$_home/.config/lazydocker/config.yml" >/dev/null
+  as_user "$user" "mkdir -p \"$home/.config/lazydocker\""
+  if ! grep -q 'dockerCompose: docker compose' "$home/.config/lazydocker/config.yml" 2>/dev/null; then
+    printf '%s\n' 'commandTemplates:' '  dockerCompose: docker compose' | tee -a "$home/.config/lazydocker/config.yml" >/dev/null
   fi
 
-  user_zshrc_block "$_user" "$_home" "lsd" "lsd" 'alias l="lsd -la"'
+  user_zshrc_block "$home" "lsd" "lsd" 'alias l="lsd -la"'
 
-  as_user "$_user" "nvm install --lts --latest-npm && nvm use --lts" || \
-    warn "nvm node install failed for $_user; continuing."
+  as_user "$user" "nvm install --lts --latest-npm && nvm use --lts" ||
+    warn "nvm node install failed for $user; continuing."
 
-  user_zshrc_block "$_user" "$_home" "starship" "Starship" 'eval "$(starship init zsh)"'
-  as_user "$_user" "starship preset gruvbox-rainbow -o \"$_home/.config/starship.toml\"" || \
-    warn "starship preset failed for $_user; continuing."
+  user_zshrc_block "$home" "starship" "Starship" 'eval "$(starship init zsh)"'
+  as_user "$user" "starship preset gruvbox-rainbow -o \"$home/.config/starship.toml\"" ||
+    warn "starship preset failed for $user; continuing."
 
-  user_zshrc_block "$_user" "$_home" "thefuck" "The Fuck" 'eval "$(thefuck --alias)"'
-  user_zshrc_block "$_user" "$_home" "zoxide" "Zoxide" 'eval "$(zoxide init zsh)"'
+  user_zshrc_block "$home" "thefuck" "The Fuck" 'eval "$(thefuck --alias)"'
+  user_zshrc_block "$home" "zoxide" "Zoxide" 'eval "$(zoxide init zsh)"'
 
-  as_user "$_user" "mkdir -p \"$_home/.config/vim\""
-  sudo -u "$_user" ln -sfn "$DOTFILES_ROOT/vim/plugins" "$_home/.config/vim/plugins"
-  sudo -u "$_user" ln -sfn "$DOTFILES_ROOT/vim/.vimrc" "$_home/.vimrc"
+  as_user "$user" "mkdir -p \"$home/.config/vim\""
+  sudo -u "$user" ln -sfn "$DOTFILES_ROOT/vim/plugins" "$home/.config/vim/plugins"
+  sudo -u "$user" ln -sfn "$DOTFILES_ROOT/vim/.vimrc" "$home/.vimrc"
 
-  if [ "$_user" != "root" ]; then
-    sudo chown -R "$_user:$_user" "$_home/.config" "$_home/.oh-my-zsh" "$_home/.vimrc" "$_home/.zshrc" 2>/dev/null || \
-      sudo chown -R "$_user" "$_home/.config" "$_home/.oh-my-zsh" "$_home/.vimrc" "$_home/.zshrc" || true
+  if [ "$user" != "root" ]; then
+    sudo chown -R "$user:$user" "$home/.config" "$home/.oh-my-zsh" "$home/.vimrc" "$home/.zshrc" 2>/dev/null ||
+      sudo chown -R "$user" "$home/.config" "$home/.oh-my-zsh" "$home/.vimrc" "$home/.zshrc" || true
   fi
-  sudo chsh -s "$(command -v zsh)" "$_user" || warn "chsh failed for $_user; continuing."
-  unset _user _home
+  sudo chsh -s "$(command -v zsh)" "$user" || warn "chsh failed for $user; continuing."
 }
 
 setup_shell_by_user() {
-  _user="$1"
-  _home="$(user_home "$_user")"
-  if [ -z "$_home" ] || [ ! -d "$_home" ]; then
-    die "Cannot resolve home directory for user: $_user"
+  local user home
+  user="$1"
+  home="$(user_home "$user")"
+  if [ -z "$home" ] || [ ! -d "$home" ]; then
+    die "Cannot resolve home directory for user: $user"
   fi
 
-  reset_user_shell_state "$_user" "$_home"
-  install_user_nix_packages "$_user"
-  install_user_oh_my_zsh "$_home"
+  reset_user_shell_state "$user" "$home"
+  install_user_nix_packages "$user"
+  install_user_oh_my_zsh "$home"
 
-  install_user_zsh_plugin "$_home" "zsh-users/zsh-autosuggestions"
-  user_zshrc_block "$_user" "$_home" "autosuggest" "ZSH Autosuggestions" "ZSH_AUTOSUGGEST_STRATEGY=(history completion)"
+  install_user_zsh_plugin "$home" "zsh-users/zsh-autosuggestions"
+  user_zshrc_block "$home" "autosuggest" "ZSH Autosuggestions" "ZSH_AUTOSUGGEST_STRATEGY=(history completion)"
 
-  install_user_zsh_plugin "$_home" "zsh-users/zsh-syntax-highlighting"
-  user_zshrc_block "$_user" "$_home" "highlight" "ZSH Syntax Highlighting" "ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)"
+  install_user_zsh_plugin "$home" "zsh-users/zsh-syntax-highlighting"
+  user_zshrc_block "$home" "highlight" "ZSH Syntax Highlighting" "ZSH_HIGHLIGHT_HIGHLIGHTERS=(main brackets pattern cursor)"
 
-  install_user_zsh_plugin "$_home" "lukechilds/zsh-nvm"
+  install_user_zsh_plugin "$home" "lukechilds/zsh-nvm"
 
   # shellcheck disable=SC2086
-  user_activate_plugins "$_home" $ZSH_PLUGINS
+  user_activate_plugins "$home" $ZSH_PLUGINS
 
-  configure_user_locales "$_home"
-  configure_user_configs "$_user" "$_home"
-  unset _user _home
+  configure_user_locales "$home"
+  configure_user_configs "$user" "$home"
 }
 
 main() {
+  local user
+  parse_args "$@"
+  confirm_destruction
+
+  # Warm sudo once so its prompt is not hidden behind a step spinner.
+  sudo_warm || warn "sudo unavailable; privileged steps may fail."
+
   run_step "Updating packages" update_packages
   run_step "Installing required packages" install_required_packages
   run_step "Removing unneeded packages" remove_unneeded_packages
@@ -341,18 +385,17 @@ main() {
 
   log "Cleaning up Nix profiles" false false
   # shellcheck disable=SC2086
-  for _u in $TARGET_USERS; do
-    clean_nix_by_user "$_u"
+  for user in $TARGET_USERS; do
+    clean_nix_by_user "$user"
   done
 
   run_step "Setting up Nix" setup_nix
 
   log "Setting up users environment" false false
   # shellcheck disable=SC2086
-  for _u in $TARGET_USERS; do
-    run_step "Provisioning shell for $_u" setup_shell_by_user "$_u"
+  for user in $TARGET_USERS; do
+    run_step "Provisioning shell for $user" setup_shell_by_user "$user"
   done
-  unset _u
   print_summary "Ubuntu provisioning summary"
 }
 

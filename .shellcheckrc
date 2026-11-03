@@ -1,0 +1,43 @@
+# ShellCheck configuration — https://www.shellcheck.net/wiki/Directive
+#
+# The scripts also run under zsh, but their syntax is the bash/POSIX subset
+# (no zsh-only constructs), so bash is the closest dialect ShellCheck can
+# check them as. Every script also carries `#!/usr/bin/env bash`.
+shell=bash
+
+# SC1091: "Not following: file was not specified as input".
+# Sourced paths are computed at runtime ($SCRIPT_DIR/../shared/common.sh,
+# ${NVM_DIR:-$HOME/.nvm}/nvm.sh, ~/.oh-my-zsh/...) and `. /etc/os-release`
+# only exists on Linux, so ShellCheck cannot resolve them statically. Scripts
+# that source relative files already carry an inline
+# `# shellcheck disable=SC1091`; this entry covers the rest (e.g. os-release).
+# NOTE: source-path=SCRIPTDIR is deliberately NOT set — it only resolves
+# literal relative paths, and every source here is dynamic, so it would add
+# configuration without removing any finding.
+disable=SC1091
+
+# SC2016: "Expressions don't expand in single quotes".
+# Several helpers *emit literal shell code* into ~/.zshrc / user rc files,
+# e.g. printf '%s\n' 'eval "$(starship init zsh)"'. The literal text is the
+# deliverable; expanding it here would write the wrong thing into the rc file.
+disable=SC2016
+
+# SC2034: "variable appears unused".
+# common.sh and menu.sh are sourced libraries. Color aliases (RED/YELLOW/BLUE),
+# SUMMARY_OK/SUMMARY_FAILED/SUMMARY_SKIPPED, MENU_CHOICE/choice and MENU_PATH
+# are assigned in one file and read in another (setup.sh, scripts/*). Per-file
+# analysis cannot see those readers, so this is structural, not dead code.
+disable=SC2034
+
+# Kept ENABLED on purpose:
+#   SC2086 (word splitting) — the intentional unquoted manifests
+#                            ($BREW_TOOLS, $DOCKER_PKGS_*, $APT_DEPS_*) are
+#                            suppressed inline with `# shellcheck
+#                            disable=SC2086`, which keeps the exception local
+#                            to the line that needs it.
+#   SC2317 (unreachable)   — two intentional guard patterns (`return 0
+#                            2>/dev/null || exit 0`, case fall-through) still
+#                            report; they are candidates for inline
+#                            annotations when the baseline is burned down.
+#   SC1003 (literal '\')   — ASCII spinner frame; the single-quoted backslash
+#                            is correct, so it stays visible until annotated.

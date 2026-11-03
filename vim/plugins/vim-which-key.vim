@@ -1,4 +1,4 @@
-" vim-witch-key
+" vim-which-key
 
 " Define prefix dictionary
 let g:which_key_map =  {
@@ -6,7 +6,7 @@ let g:which_key_map =  {
   \ ':' : [ ':History:' , 'Command History' ],
   \ '/' : [ ':RG' , 'Grep' ],
   \ ' ' : [ ':Files' , 'Find Files' ],
-  \ 'w' : { 
+  \ 'w' : {
     \ 'name' : '+windows',
     \ 's' : [ ':Windows' , 'Switch Window' ],
     \ 'd' : [ '<C-W>c' , 'Delete Window' ],
