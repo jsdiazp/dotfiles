@@ -597,15 +597,18 @@ sudo_warm() {
   return 0
 }
 
-# confirm <prompt> [default=n] — returns 0 on yes. Reads from stdin.
+# confirm <prompt> [default=n] [strict] — returns 0 on yes. Reads from stdin.
 # Accepts y/yes (any case). Portable: no `read -p` (unsupported in zsh).
-# DOTFILES_ASSUME_YES=1 answers yes automatically (unattended runs, --auto
-# scripts) without touching stdin.
+# DOTFILES_ASSUME_YES=1 answers yes automatically (unattended runs, --yes)
+# without touching stdin, EXCEPT when the third argument is `strict`: use that
+# for questions where yes means "destroy something not part of this task" so
+# a blanket --yes can never answer them (EOF/empty input then means the default).
 confirm() {
   local _prompt="${1:-Are you sure?}"
   local _default="${2:-n}"
+  local _strict="${3:-}"
   local _answer=""
-  if [ "${DOTFILES_ASSUME_YES:-}" = "1" ]; then
+  if [ "${DOTFILES_ASSUME_YES:-}" = "1" ] && [ "$_strict" != "strict" ]; then
     printf '%b\n' "${DOTFILES_GREEN}[auto-yes] ${_prompt}${DOTFILES_RESET}"
     return 0
   fi

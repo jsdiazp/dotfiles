@@ -283,7 +283,8 @@ homebrew_shellenv_line() {
 install_homebrew() {
   # Uninstall only when a brew installation actually exists.
   if have_cmd brew; then
-    if confirm "Homebrew already installed. Reinstall from scratch?" "n"; then
+    # strict: a blanket --yes must never uninstall an existing Homebrew.
+    if confirm "Homebrew already installed. Reinstall from scratch?" "n" strict; then
       /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh)" || true
     else
       info "Keeping existing Homebrew installation."
