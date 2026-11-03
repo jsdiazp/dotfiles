@@ -6,11 +6,23 @@
 #     Template-Method pipeline of run_step stages.
 #   - Configuration as data: BREW_TOOLS / APT_DEPS_* lists and zshrc_block()
 #     cases replace scattered imperative blocks.
-#   - Idempotency: zshrc_block() wraps append_once (re-runs are no-ops),
+#   - Idempotent: configure_tool() wraps append_once (re-runs are no-ops),
 #     symlinks use safe_link (repo-root anchored, not $PWD), clones use
-#     clone_or_update (no blind rm -rf, no clone-over-existing failure).
+#     clone_or_update (no blind rm -rf, no clone-over-existing failure), and
+#     generated files (OMZ template, starship preset, catppuccin theme) are
+#     only written when missing.
+#   - Non-destructive: user rc files are never deleted or overwritten.
+#     ~/.zprofile is never touched at all. The OMZ template seeds ~/.zshrc
+#     only when it does not exist; an existing ~/.zshrc that does not load
+#     Oh My Zsh yet gets a marked block prepended (plugins= BEFORE the
+#     source line) with the user content left intact.
+#   - Interactive steps are live: run_step_live wraps anything that prompts
+#     (the Homebrew installer, chsh), because a captured step would hide the
+#     prompt behind the spinner.
 #   - Adapters: pkg_manager()/os_family() from common.sh replace the
-#     apt-vs-yum branches; `command -v zsh` replaces hardcoded /bin/zsh.
+#     apt-vs-yum branches, as_root replaces unquoted $_sudo, sed_inplace
+#     hides the BSD/GNU `sed -i` difference, and `command -v zsh` replaces
+#     the hardcoded /bin/zsh.
 #   - No `source ~/.zshrc` mid-script (side-effectful, often a no-op for
 #     nvm/brew in non-interactive shells).
 
@@ -21,7 +33,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/../shared/common.sh"
 DOTFILES_ROOT="$(repo_root_from "$SCRIPT_DIR")"
 
+# Detected once; the helpers below are pure switches on these two globals.
 DOTFILES_OS="$(os_family)"
+DOTFILES_ARCH="$(uname -m 2>/dev/null || printf 'unknown')"
 
 # ---------------------------------------------------------------------------
 # Declarative manifests
@@ -54,87 +68,107 @@ zshrc_block() {
 
 # Configure additional tools (idempotent marked block).
 configure_tool() {
+  local _name _code _id
   _name="$1"
   _code="$2"
   _id="$(printf '%s' "$_name" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
   append_once "$HOME/.zshrc" "$_id" "# $_name
 $_code"
-  unset _name _code _id
 }
 
-# Detect the operating system and architecture (sets DOTFILES_OS/ARCH).
-detect_os() {
-  DOTFILES_OS="$(os_family)"
-  DOTFILES_ARCH="$(uname -m 2>/dev/null || printf 'unknown')"
-  export DOTFILES_OS DOTFILES_ARCH
+# zshrc_omz_block — body of the marked block that wires Oh My Zsh into a
+# pre-existing ~/.zshrc. plugins= must come BEFORE the source line: Oh My
+# Zsh reads it while sourcing, so setting it afterwards has no effect.
+zshrc_omz_block() {
+  printf '%s\n' 'export ZSH="${ZSH:-$HOME/.oh-my-zsh}"'
+  printf '%s\n' 'plugins=(git)'
+  printf '%s\n' 'source $ZSH/oh-my-zsh.sh'
+}
+
+# prepend_once <file> <marker> <content...> — prepends a marked block once.
+# Mirrors append_once's guard markers; the file keeps its inode and mode
+# because the merged result is written back with `cat >` (not mv).
+prepend_once() {
+  local _file _marker _begin _end _tmp
+  _file="$1"
+  _marker="$2"
+  _begin="# >>> dotfiles:${_marker} >>>"
+  _end="# <<< dotfiles:${_marker} <<<"
+  shift 2
+  ensure_dir "$(dirname "$_file")"
+  [ -e "$_file" ] || : >"$_file"
+  if grep -qF "$_begin" "$_file" 2>/dev/null; then
+    return 0
+  fi
+  _tmp="$(mktemp "${TMPDIR:-/tmp}/dotfiles-prepend.XXXXXX")"
+  {
+    printf '%s\n' "$_begin"
+    printf '%s\n' "$*"
+    printf '%s\n' "$_end"
+    printf '\n'
+    cat "$_file"
+  } >"$_tmp"
+  cat "$_tmp" >"$_file"
+  rm -f "$_tmp"
 }
 
 # Install ZSH based on the package manager (adapter over apt/dnf/yum).
 install_zsh() {
   have_cmd zsh && return 0
-  _sudo="$(sudo_if_needed)"
   case "$(pkg_manager)" in
     apt)
-      run_step "Updating apt index" $_sudo apt-get update
-      run_step "Installing zsh" $_sudo apt-get install -y zsh
+      run_step "Updating apt index" as_root apt-get update
+      run_step "Installing zsh" as_root apt-get install -y zsh
       ;;
     dnf)
-      run_step "Installing zsh" $_sudo dnf install -y zsh
+      run_step "Installing zsh" as_root dnf install -y zsh
       ;;
     yum)
-      run_step "Installing zsh" $_sudo yum install -y zsh
+      run_step "Installing zsh" as_root yum install -y zsh
       ;;
     *)
       die "Unsupported package manager. Please install ZSH manually."
       ;;
   esac
-  unset _sudo
 }
 
-# Install Oh My Zsh (idempotent: fresh template only on first install;
-# user .zshrc — including append_once blocks — is preserved on re-runs).
+# Install Oh My Zsh (idempotent and non-destructive: the template seeds
+# ~/.zshrc only when it is absent; an existing ~/.zshrc only gains a marked
+# block when it does not load Oh My Zsh yet; ~/.zprofile is never touched).
 install_oh_my_zsh() {
-  _fresh=0
-  if [ ! -d "$HOME/.oh-my-zsh/.git" ]; then
-    _fresh=1
-  fi
   clone_or_update "https://github.com/ohmyzsh/ohmyzsh.git" "$HOME/.oh-my-zsh"
-  if [ "$_fresh" -eq 1 ] || [ ! -f "$HOME/.zshrc" ]; then
-    if [ -e "$HOME/.zshrc" ] || [ -L "$HOME/.zshrc" ]; then
-      backup_once "$HOME/.zshrc"
-      rm -f "$HOME/.zshrc"
-    fi
+  if [ ! -e "$HOME/.zshrc" ] && [ ! -L "$HOME/.zshrc" ]; then
     cp "$HOME/.oh-my-zsh/templates/zshrc.zsh-template" "$HOME/.zshrc"
+    return 0
   fi
-  if [ -e "$HOME/.zprofile" ] || [ -L "$HOME/.zprofile" ]; then
-    backup_once "$HOME/.zprofile"
-    rm -f "$HOME/.zprofile"
+  # Already wired (ignore commented-out mentions of the file).
+  if grep -q '^[^#]*oh-my-zsh\.sh' "$HOME/.zshrc" 2>/dev/null; then
+    return 0
   fi
-  unset _fresh
+  info "Wiring Oh My Zsh into existing ~/.zshrc (content preserved)."
+  prepend_once "$HOME/.zshrc" "oh-my-zsh" "$(zshrc_omz_block)"
 }
 
 # Install ZSH Plugin (idempotent).
 install_zsh_plugin() {
+  local _repo _dir
   _repo="$1"
   _dir="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/$(basename "$_repo")"
   clone_or_update "https://github.com/${_repo}.git" "$_dir"
-  unset _repo _dir
 }
 
-# Activate the specified ZSH plugins in .zshrc.
+# Activate the specified ZSH plugins in .zshrc (idempotent).
 activate_zsh_plugins() {
+  local _plugins
   _plugins="$*"
   require_cmd sed
   if ! grep -q '^plugins=' "$HOME/.zshrc" 2>/dev/null; then
-    warn "No plugins= line in ~/.zshrc; appending one."
-    printf '\nplugins=(%s)\n' "$_plugins" >>"$HOME/.zshrc"
+    # Prepend (not append): plugins= is only read while Oh My Zsh is sourced.
+    warn "No plugins= line in ~/.zshrc; prepending one."
+    prepend_once "$HOME/.zshrc" "zsh-plugins" "plugins=($_plugins)"
     return 0
   fi
-  case "$DOTFILES_OS" in
-    darwin) sed -i '' -e "s/^plugins=.*/plugins=(${_plugins})/" "$HOME/.zshrc" ;;
-    *) sed -i "s/^plugins=.*/plugins=(${_plugins})/" "$HOME/.zshrc" ;;
-  esac
-  unset _plugins
+  sed_inplace "s/^plugins=.*/plugins=(${_plugins})/" "$HOME/.zshrc"
 }
 
 # Set up ZSH and install plugins.
@@ -153,18 +187,34 @@ setup_zsh() {
 
   run_step "Installing zsh-nvm" install_zsh_plugin lukechilds/zsh-nvm
 
-  # shellcheck disable=SC2086
+  # shellcheck disable=SC2086 # intentional word-splitting of the plugin manifest
   activate_zsh_plugins $ZSH_PLUGINS
 }
 
 # Activate ZSH as the default shell (portable path, not hardcoded /bin/zsh).
+# Live step: chsh prompts for a password. Skips when the login shell is
+# already zsh, and on Linux when the path is missing from /etc/shells
+# (chsh would reject it).
 activate_zsh() {
+  local _zsh
   _zsh="$(command -v zsh || true)"
   if [ -z "$_zsh" ]; then
     die "zsh not found on PATH; cannot chsh."
   fi
-  run_step "Setting default shell to $_zsh" chsh -s "$_zsh"
-  unset _zsh
+  if [ "${SHELL:-}" = "$_zsh" ]; then
+    info "Login shell is already $_zsh; skipping chsh."
+    return 0
+  fi
+  case "$DOTFILES_OS" in
+    darwin) : ;;
+    *)
+      if ! grep -qx "$_zsh" /etc/shells 2>/dev/null; then
+        warn "$_zsh is not listed in /etc/shells; skipping chsh."
+        return 0
+      fi
+      ;;
+  esac
+  run_step_live "Setting default shell to $_zsh" chsh -s "$_zsh"
 }
 
 # Install node.js via nvm when the shell integration is available.
@@ -187,6 +237,7 @@ install_node() {
 
 # brew_on_path — ensure just-installed brew is usable in this process.
 brew_on_path() {
+  local _brew
   have_cmd brew && return 0
   for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew; do
     if [ -x "$_brew" ]; then
@@ -194,30 +245,27 @@ brew_on_path() {
       break
     fi
   done
-  unset _brew
 }
 
 # Install Homebrew (decomposed: deps -> install -> configure).
 install_homebrew_deps() {
-  _sudo="$(sudo_if_needed)"
   case "$(pkg_manager)" in
     apt)
-      run_step "Updating apt index" $_sudo apt-get update
-      # shellcheck disable=SC2086
-      run_step "Installing Homebrew build deps" $_sudo apt-get install -y $APT_DEPS_DEBIAN
+      run_step "Updating apt index" as_root apt-get update
+      # shellcheck disable=SC2086 # intentional word-splitting of the dep manifest
+      run_step "Installing Homebrew build deps" as_root apt-get install -y $APT_DEPS_DEBIAN
       ;;
     dnf)
-      run_step "Installing Development Tools" $_sudo dnf groupinstall -y 'Development Tools'
-      # shellcheck disable=SC2086
-      run_step "Installing Homebrew deps" $_sudo dnf install -y $APT_DEPS_FEDORA
+      run_step "Installing Development Tools" as_root dnf groupinstall -y 'Development Tools'
+      # shellcheck disable=SC2086 # intentional word-splitting of the dep manifest
+      run_step "Installing Homebrew deps" as_root dnf install -y $APT_DEPS_FEDORA
       ;;
     yum)
-      run_step "Installing Development Tools" $_sudo yum groupinstall -y 'Development Tools'
-      # shellcheck disable=SC2086
-      run_step "Installing Homebrew deps" $_sudo yum install -y $APT_DEPS_FEDORA
+      run_step "Installing Development Tools" as_root yum groupinstall -y 'Development Tools'
+      # shellcheck disable=SC2086 # intentional word-splitting of the dep manifest
+      run_step "Installing Homebrew deps" as_root yum install -y $APT_DEPS_FEDORA
       ;;
   esac
-  unset _sudo
 }
 
 homebrew_shellenv_line() {
@@ -247,7 +295,8 @@ install_homebrew() {
   esac
 
   if ! have_cmd brew; then
-    run_step "Installing Homebrew" /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    # Live: the installer waits for RETURN and may ask for the sudo password.
+    run_step_live "Installing Homebrew" /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   fi
   brew_on_path
   require_cmd brew
@@ -256,37 +305,36 @@ install_homebrew() {
 
 # Install additional tools (single declarative manifest + one brew call).
 install_tools() {
+  local _tap _tools
   brew_on_path
   require_cmd brew
 
-  # Taps first (word-splitting on controlled constant is intentional).
-  # shellcheck disable=SC2086
+  # Taps first (word-splitting on the controlled manifest is intentional).
+  # shellcheck disable=SC2086 # intentional word-splitting of the tap manifest
   for _tap in $BREW_TAPS; do
     brew tap "$_tap" || warn "brew tap $_tap failed; continuing."
   done
 
-  # shellcheck disable=SC2086
   _tools="$BREW_TOOLS"
   case "$DOTFILES_OS" in
     darwin) _tools="$_tools $BREW_TOOLS_DARWIN" ;;
   esac
+  # shellcheck disable=SC2086 # intentional word-splitting of the tool manifest
   run_step "Installing brew tools" brew install $_tools
-  unset _tools
 
   configure_tool "fzf" "$(zshrc_block fzf)"
   configure_tool "starship" "$(zshrc_block starship)"
   configure_tool "The Fuck" "$(zshrc_block thefuck)"
   configure_tool "tmux" "$(zshrc_block tmux)"
   configure_tool "zoxide" "$(zshrc_block zoxide)"
-  unset _tap
 }
 
 # Symlink a config dir/file from the repo into $HOME (repo-anchored).
 link_config() {
+  local _src_rel _dst
   _src_rel="$1"
   _dst="$2"
   safe_link "$DOTFILES_ROOT/$_src_rel" "$_dst"
-  unset _src_rel _dst
 }
 
 # Configure dotfiles and related tools.
@@ -297,7 +345,7 @@ configure_dotfiles() {
   # Fetch upstream theme only when missing (never overwrite user edits).
   if [ ! -f "$HOME/.config/alacritty/catppuccin-mocha.toml" ]; then
     curl -fLO --output-dir "$HOME/.config/alacritty" \
-      https://github.com/catppuccin/alacritty/raw/main/catppuccin-mocha.toml || \
+      https://github.com/catppuccin/alacritty/raw/main/catppuccin-mocha.toml ||
       warn "Could not download catppuccin theme; continuing."
   fi
   # Non-macOS terminals need opaque decorations; edit the *installed* copy,
@@ -306,7 +354,7 @@ configure_dotfiles() {
     darwin) : ;;
     *)
       if grep -q 'decorations = "Transparent"' "$HOME/.config/alacritty/alacritty.toml" 2>/dev/null; then
-        sed -i 's/decorations = "Transparent"/decorations = "None"/' "$HOME/.config/alacritty/alacritty.toml"
+        sed_inplace 's/decorations = "Transparent"/decorations = "None"/' "$HOME/.config/alacritty/alacritty.toml"
       fi
       ;;
   esac
@@ -314,8 +362,11 @@ configure_dotfiles() {
   link_config "btop" "$HOME/.config/btop"
 
   if have_cmd starship; then
-    starship preset gruvbox-rainbow -o "$HOME/.config/starship.toml" || \
-      warn "starship preset failed; continuing."
+    # Generate only when missing: an existing file holds user edits.
+    if [ ! -e "$HOME/.config/starship.toml" ]; then
+      starship preset gruvbox-rainbow -o "$HOME/.config/starship.toml" ||
+        warn "starship preset failed; continuing."
+    fi
   else
     warn "starship not on PATH yet; skipping preset (open a new shell)."
   fi
@@ -330,14 +381,14 @@ configure_dotfiles() {
 
 # Main script execution.
 main() {
-  detect_os
   run_step "Setting up ZSH" setup_zsh
   run_step "Installing Node.js" install_node
   # Live output: install_homebrew may prompt (confirm reinstall).
   run_step_live "Installing Homebrew" install_homebrew
   run_step "Installing tools" install_tools
   run_step "Configuring dotfiles" configure_dotfiles
-  run_step "Activating ZSH shell" activate_zsh
+  # Live output: chsh asks for a password.
+  run_step_live "Activating ZSH shell" activate_zsh
   print_summary "Setup summary"
   log "System setup completed!"
 }
