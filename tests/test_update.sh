@@ -13,8 +13,9 @@
 #     the failing step's output.
 #   - A tool missing from PATH is SKIP, never FAIL, and does not fail the run.
 #   - Housekeeping is best-effort: a failing `brew autoremove`/`brew cleanup`,
-#     `flatpak uninstall --unused` or `nvm cache clear` must not fail the Homebrew row or the exit status; a failing
-#     `brew upgrade` must.
+#     `flatpak uninstall --unused`, `nvm cache clear`, `uv cache prune` or
+#     `pnpm store prune` must not fail its ecosystem row or the exit status; a
+#     failing `brew upgrade` or `uv tool upgrade --all` must.
 #   - Linux: apt-get goes through sudo only when not root, in one exact order,
 #     and never touches the macOS tools (softwareupdate/mas).
 #   - Oh My Zsh is upgraded through tools/upgrade.sh (`omz update
@@ -88,7 +89,7 @@ EOF
 # install_optional_tools — the tools whose absence is itself under test.
 install_optional_tools() {
   local tool
-  for tool in pod yarn composer; do
+  for tool in pod yarn composer uv pnpm; do
     ln -sfn _dotfiles_stub "$STUBS/$tool"
   done
 }
@@ -188,17 +189,23 @@ test_darwin_tool_calls_and_summary() {
   # Exactly one summary row per ecosystem (an earlier version doubled them).
   local rows label
   rows="$(summary_rows "$OUT")"
-  assert_eq "12" "$(printf '%s\n' "$rows" | grep -c .)" \
+  assert_eq "14" "$(printf '%s\n' "$rows" | grep -c .)" \
     "one summary row per ecosystem"
   for label in "macOS" "Mac App Store" "Node.js (nvm)" "RubyGems" \
-    "CocoaPods cache" "Homebrew" "npm" "npm cache" "Yarn cache" "Composer" \
-    "Composer cache" "Oh My Zsh"; do
+    "CocoaPods cache" "Homebrew" "npm" "npm cache" "uv" "pnpm" "Yarn cache" \
+    "Composer" "Composer cache" "Oh My Zsh"; do
     assert_eq "1" "$(rows_matching "$rows" "$label")" \
       "exactly one summary row for $label"
   done
-  assert_eq "0 12" "$(counts_line "$OUT" | awk '{ print $2, $1 + $3 }')" \
-    "counts line must report 0 failed and 12 ecosystems"
+  assert_eq "0 14" "$(counts_line "$OUT" | awk '{ print $2, $1 + $3 }')" \
+    "counts line must report 0 failed and 14 ecosystems"
   assert_called "npm cache verify"
+  assert_called "uv tool upgrade --all"
+  assert_called "uv cache prune" "uv cache prune is housekeeping"
+  assert_called "pnpm update -g"
+  assert_called "pnpm store prune"
+  assert_not_called "uv self update" "uv self update fails for brew installs"
+  assert_not_called "pnpm self-update" "pnpm self-update is not used"
   assert_called "composer clear-cache"
   assert_called "nvm cache clear" "nvm download cache only"
 
@@ -229,14 +236,14 @@ test_failing_ecosystem_is_isolated() {
     "Yarn cache must still run after npm failed"
   assert_contains "$(row_for "$rows" Composer)" "OK" \
     "Composer must still run after npm failed"
-  assert_eq "1 11" "$(counts_line "$OUT" | awk '{ print $2, $1 + $3 }')" \
+  assert_eq "1 13" "$(counts_line "$OUT" | awk '{ print $2, $1 + $3 }')" \
     "counts line must report the single failure"
 }
 
 test_missing_tool_is_skip_not_fail() {
-  # composer/pod/yarn are not in /usr/bin or /bin on macOS or Ubuntu.
+  # composer/pod/yarn/uv/pnpm are not in /usr/bin or /bin on macOS or Ubuntu.
   local tool
-  for tool in composer pod yarn; do
+  for tool in composer pod yarn uv pnpm; do
     if command -v "$tool" >/dev/null 2>&1; then
       skip "$tool is on PATH; the missing-tool path cannot be tested"
     fi
@@ -253,8 +260,10 @@ test_missing_tool_is_skip_not_fail() {
   assert_contains "$(row_for "$rows" "Yarn cache")" "SKIP"
   assert_contains "$(row_for "$rows" "Composer cache")" "SKIP"
   assert_contains "$(row_for "$rows" Composer)" "SKIP"
+  assert_contains "$(row_for "$rows" uv)" "SKIP"
+  assert_contains "$(row_for "$rows" pnpm)" "SKIP"
   assert_contains "$OUT" "[skip] CocoaPods cache"
-  assert_eq "0 12" "$(counts_line "$OUT" | awk '{ print $2, $1 + $3 }')" \
+  assert_eq "0 14" "$(counts_line "$OUT" | awk '{ print $2, $1 + $3 }')" \
     "skips are not failures"
 }
 
@@ -288,6 +297,32 @@ test_flatpak_and_nvm_housekeeping_is_best_effort() {
   assert_rc 0 "flatpak housekeeping is best-effort"
   assert_contains "$OUT" "WARN: flatpak uninstall --unused failed"
   assert_contains "$(row_for "$(summary_rows "$OUT")" Flatpak)" "OK"
+}
+
+test_uv_and_pnpm_housekeeping_is_best_effort() {
+  # A failing cache/store prune must not fail the uv/pnpm row or the run.
+  stub_everything
+  make_omz_stub
+  run_update STUB_FAIL='uv:cache pnpm:store' DOTFILES_LOG_LEVEL=info
+  assert_rc 0 "uv/pnpm housekeeping is best-effort"
+  assert_contains "$OUT" "WARN: uv cache prune failed"
+  assert_contains "$OUT" "WARN: pnpm store prune failed"
+  local rows
+  rows="$(summary_rows "$OUT")"
+  assert_contains "$(row_for "$rows" uv)" "OK" \
+    "a failed uv cache prune must not fail the uv row"
+  assert_contains "$(row_for "$rows" pnpm)" "OK" \
+    "a failed pnpm store prune must not fail the pnpm row"
+
+  # ...but a failed `uv tool upgrade --all` is a real failure, isolated to uv.
+  reset_calls
+  run_update STUB_FAIL=uv:tool DOTFILES_LOG_LEVEL=info
+  assert_rc 1 "a failed uv tool upgrade must fail the run"
+  assert_contains "$OUT" "WARN: uv tool upgrade --all failed"
+  rows="$(summary_rows "$OUT")"
+  assert_contains "$(row_for "$rows" uv)" "FAIL"
+  assert_contains "$(row_for "$rows" pnpm)" "OK" \
+    "pnpm must still run after uv failed"
 }
 
 test_linux_apt_order_and_sudo() {

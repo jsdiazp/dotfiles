@@ -171,6 +171,34 @@ clean_npm_cache() {
   npm cache verify
 }
 
+# Function to update uv-installed tools. `uv self update` is deliberately not
+# used: it fails for Homebrew installs, where Homebrew owns the binary.
+update_uv() {
+  local rc=0
+  have_cmd uv || return 2
+  uv tool upgrade --all || {
+    warn "uv tool upgrade --all failed; continuing."
+    rc=1
+  }
+  # Best-effort: only the download/build cache; installed tools stay.
+  uv cache prune || warn "uv cache prune failed; continuing."
+  return "$rc"
+}
+
+# Function to update pnpm global packages (`pnpm self-update` is deliberately
+# not used: Homebrew/Corepack own the binary when installed that way).
+update_pnpm() {
+  local rc=0
+  have_cmd pnpm || return 2
+  pnpm update -g || {
+    warn "pnpm update -g failed; continuing."
+    rc=1
+  }
+  # Best-effort: only the content-addressable store; node_modules stay.
+  pnpm store prune || warn "pnpm store prune failed; continuing."
+  return "$rc"
+}
+
 # Function to clean Composer's cache
 clean_composer_cache() {
   have_cmd composer || return 2
@@ -248,6 +276,8 @@ main() {
   run_step_soft "Homebrew" update_homebrew
   run_step_soft "npm" update_npm
   run_step_soft "npm cache" clean_npm_cache
+  run_step_soft "uv" update_uv
+  run_step_soft "pnpm" update_pnpm
   run_step_soft "Yarn cache" clean_yarn_cache
   run_step_soft "Composer" update_composer
   run_step_soft "Composer cache" clean_composer_cache

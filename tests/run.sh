@@ -39,7 +39,7 @@ FILTER="${1:-}"
 # tools, and anything privileged or system-changing. Tests stub what they need.
 DENY_TOOLS=" sudo su doas brew mas softwareupdate apt apt-get apt-cache aptitude
   dpkg dpkg-query dnf yum rpm snap flatpak npm npx node nodejs yarn pnpm corepack
-  composer php gem bundle bundler ruby pod pip pip3 pipx docker podman git curl
+  composer php gem bundle bundler ruby pod pip pip3 pipx uv docker podman git curl
   wget ssh scp sftp rsync chsh usermod useradd userdel groupdel systemctl service
   swapon swapoff mkswap fallocate mount umount nix nix-env starship "
 
