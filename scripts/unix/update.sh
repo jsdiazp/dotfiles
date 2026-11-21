@@ -84,6 +84,8 @@ update_snap() {
 update_flatpak() {
   have_cmd flatpak || return 2
   flatpak update -y
+  # Housekeeping is best-effort: drop runtimes no installed app needs.
+  flatpak uninstall --unused -y || warn "flatpak uninstall --unused failed; continuing."
 }
 
 # --- Ecosystem updaters -----------------------------------------------------
@@ -106,6 +108,8 @@ update_nvm() {
     rc=1
   }
   nvm use --lts || true
+  # Best-effort: only the download cache; installed Node versions stay.
+  nvm cache clear || warn "nvm cache clear failed; continuing."
   return "$rc"
 }
 
@@ -158,6 +162,19 @@ update_homebrew() {
 update_npm() {
   have_cmd npm || return 2
   npm update -g
+}
+
+# Function to verify the npm cache (`npm cache clean` needs --force; verify
+# garbage-collects and repairs it safely)
+clean_npm_cache() {
+  have_cmd npm || return 2
+  npm cache verify
+}
+
+# Function to clean Composer's cache
+clean_composer_cache() {
+  have_cmd composer || return 2
+  composer clear-cache
 }
 
 # Function to clean Yarn cache
@@ -230,8 +247,10 @@ main() {
   run_step_soft "CocoaPods cache" clean_cocopods_cache
   run_step_soft "Homebrew" update_homebrew
   run_step_soft "npm" update_npm
+  run_step_soft "npm cache" clean_npm_cache
   run_step_soft "Yarn cache" clean_yarn_cache
   run_step_soft "Composer" update_composer
+  run_step_soft "Composer cache" clean_composer_cache
   run_step_soft "Oh My Zsh" update_ohmyzsh
 
   print_summary "Update summary"
